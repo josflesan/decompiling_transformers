@@ -1,0 +1,20 @@
+[project]
+name = "decompiling-transformers"
+version = "0.1.0"
+description = "Implementation of 'Discovering Interpretable Algorithms by Decompiling Transformers to RASP'"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.3.1",
+    "matplotlib>=3.10.8",
+    "numpy==1.26.4",
+    "streamlit>=1.54.0",
+    "torch==2.1.0",
+    "transformer-lens>=1.10.0",
+    "transformers>=5.2.0",
+]
+
+[tool.uv]
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]

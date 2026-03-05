@@ -151,13 +151,25 @@ class GPT2ComponentHooks:
         for i, (activation, head) in enumerate(product(["q", "k", "v"], range(num_heads))):
             summed_activation = torch.zeros_like(input[0])
             for activation_name in self.full_config[layer][activation][head]:
+                
+                # 1. Select the learned coefficient/mask for this input
                 coef = self.masks[:, self.mapping_to_param_idx[(layer, activation, head, activation_name)]]
+                
+                # 2. Mask the real activation signal using the coefficient
                 first_term = self.activations[activation_name] * coef.view(-1, 1, 1)
+                
+                # 3. Select the relevant optimal ablation vector and compute the second term
+                # if coef == 1 -> we keep the edge (first_term)
+                # if coef == 0 -> we prune the edge (second_term)
+                # if 0 < coef < 1 -> we keep some degree of both
+                #
+                # Note: we only train the optimal ablation vector if the edge is being pruned (coef ~ 0)
                 oa = self.oa_vecs.input_vertex_oa[self.oa_vecs.to_in_oa_idx[activation_name]]
                 second_term = oa.unsqueeze(0) * ((1 - coef) * (coef < 0.001).float()).unsqueeze(1) + \
                     oa.unsqueeze(0).detach() * ((1 - coef) * (coef >= 0.001).float()).unsqueeze(1)
                 summed_activation += first_term + second_term.unsqueeze(1)
             
+            # 4. Add the optimal ablation vector for the generic bias learned
             oa = self.oa_vecs.output_vertex_oa[self.oa_vecs.to_out_oa_idx[(layer, activation, head)]]
             summed_activation += oa.view(1, 1, -1)
             

@@ -8,13 +8,14 @@ lr_sampler_for_pruning: 0.1
 lr_ln_var_for_pruning: 0.1
 lr_oa_for_pruning: 0.002
 
-stage_config:
-  name: "stage1"
-  linear_ln: True
-  lamb: 0.001
-  num_steps: 1000
-  batch_size: 120
-  num_repeat: 12
+pruning_stages:
+
+  - name: stage1
+    linear_ln: True
+    lamb: 0.001
+    num_steps: 1000
+    batch_size: 120
+    num_repeat: 12
 
 task_config:
   name: counting

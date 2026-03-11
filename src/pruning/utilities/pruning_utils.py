@@ -21,8 +21,10 @@ def load_config(config_path: str) -> None:
     with open(config_path) as f:
         raw = yaml.safe_load(f)
         
-    # Convert stage_config dict into StageConfig
-    raw['stage_config'] = StageConfig(**raw['stage_config'])
+    # Convert stage_config dicts into StageConfig objects
+    raw['pruning_stages'] = [
+        StageConfig(**raw['pruning_stages'][idx]) for idx in range(len(raw['pruning_stages']))
+    ]
     
     # Convert task_config dict into TaskConfig
     raw['task_config'] = TaskConfig(**raw['task_config'])

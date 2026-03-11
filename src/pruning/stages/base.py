@@ -60,6 +60,15 @@ class PruningStage(ABC):
         pass
     
     def run(self):
+        """
+        Convenience method to run each of the steps associated with a pruning stage:
+        
+        1. Training
+        2. Validation
+        3. Graph Transformation
+        4. Intermediate Model Saving
+        """
+        
         #TODO: logging missing
         #TODO: might not be well-defined
         self.train()

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from transformers.model.gpt2.modeling_gpt2 import GPT2MLP
+from transformers.models.gpt2.modeling_gpt2 import GPT2MLP
 
 class OptimalAblationVectors(nn.Module):
     """

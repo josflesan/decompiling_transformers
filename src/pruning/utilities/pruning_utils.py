@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 from pathlib import Path
 from transformers import GPT2LMHeadModel
 from dacite import from_dict
-from .pruning_dataclasses import PruningRunConfig, StageConfig
+from .pruning_dataclasses import PruningRunConfig, StageConfig, TaskConfig
 
 def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
@@ -23,6 +23,9 @@ def load_config(config_path: str) -> None:
         
     # Convert stage_config dict into StageConfig
     raw['stage_config'] = StageConfig(**raw['stage_config'])
+    
+    # Convert task_config dict into TaskConfig
+    raw['task_config'] = TaskConfig(**raw['task_config'])
         
     # Instantiate RunConfig
     config = from_dict(PruningRunConfig, raw)

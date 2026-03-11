@@ -4,16 +4,20 @@ exp_name: prune_test
 output_dir: 'src/pruning/out/prune_test'
 model_path: 'models/count-@1l4h256d4lr01drop'
 init_sample_param: 1.0  # Not sure what this is for
+lr_sampler_for_pruning: 0.1
+lr_ln_var_for_pruning: 0.1
+lr_oa_for_pruning: 0.002
 
 stage_config:
   name: "stage1"
   linear_ln: True
-  lamb: 1e-3
+  lamb: 0.001
   num_steps: 1000
+  batch_size: 120
+  num_repeat: 12
 
 task_config:
   name: counting
-  batch_size: 1
   train_length_range: [0, 150]
   val_length_range: [0, 150]
   max_test_length: 150

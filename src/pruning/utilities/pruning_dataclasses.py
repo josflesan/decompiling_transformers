@@ -12,6 +12,8 @@ class TrainConfig:
 @dataclass
 class StageConfig:
     name: str
+    batch_size: int
+    num_repeat: int
     linear_ln: Optional[bool] = False
     lamb: float = 1e-3
     num_steps: int = 1000
@@ -19,7 +21,6 @@ class StageConfig:
 @dataclass
 class TaskConfig:
     name: str
-    batch_size: int
     train_length_range: List[int]
     val_length_range: List[int]
     max_test_length: int
@@ -33,6 +34,10 @@ class PruningRunConfig:
     model_path: str
     task_config: TaskConfig
     stage_config: StageConfig
+    lr_sampler_for_pruning: float
+    lr_ln_var_for_pruning: float
+    lr_oa_for_pruning: float
+    
     init_sample_param: Optional[float] = None
     full_output_dir: Path = field(init=False)
     torch_device: torch.device = field(init=False)

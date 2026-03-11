@@ -7,12 +7,6 @@ from typing import Union, Tuple
 class ComponentMaskSampler(nn.Module):
     """
     Something something
-
-    Args:
-        nn (_type_): _description_
-
-    Raises:
-        RuntimeError: _description_
     """
     
     def __init__(self, config):
@@ -43,6 +37,10 @@ class ComponentMaskSampler(nn.Module):
         
         self.config = config
         self.mapping_to_param_idx = mapping_to_param_idx
+        
+        # Initialize masking parameters, source nodes and output nodes
+        # input_vertex tells us how many Optimal Ablation vectors to learn
+        # output_vertex tells us how to learn global bias term and LayerNorm variance scalar
         self.sample_params = nn.Parameter(torch.ones(param_idx))  # Define masking parameters
         self.input_vertex = list(input_vertex)
         self.output_vertex = list(output_vertex)
@@ -115,7 +113,7 @@ class ComponentMaskSampler(nn.Module):
         def edge_active(idx):
             return masks[:, idx] > 0
         
-        def zero_edge(idx, condition):
+        def zero_edge(idx, condition): 
             masks[:, idx].masked_fill_(condition, 0)
         
         # --------------------------------------------------------------------------------
@@ -142,7 +140,7 @@ class ComponentMaskSampler(nn.Module):
                     
                     head_reach.append(reach)
                 
-                reachable_to_input[f"attn_output-{layer}-{head}"] = torch.stack(hard_reach).all(dim=0)
+                reachable_to_input[f"attn_output-{layer}-{head}"] = torch.stack(head_reach).all(dim=0)
 
             # ----- MLP
             mlp_reach = torch.zeros(bz, dtype=torch.bool, device=masks.device)
@@ -249,10 +247,11 @@ class ComponentMaskSampler(nn.Module):
         the expected active probability of each edge and summing them up gives us our sparsity.
 
         Args:
-            node_reg_coef (float): _description_
+            node_reg_coef (float): used to support node-level regularization
 
         Returns:
-            _type_: _description_
+            Tuple[torch.Tensor, Tuple[float]]: the first value is the L1 penalty tensor, second value
+            are the actual penalty floats (detached) meant for logging
         """
         
         edge_reg = F.sigmoid(self.sample_params).sum()

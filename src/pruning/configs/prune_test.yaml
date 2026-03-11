@@ -1,7 +1,7 @@
 seed: 0
 device: mps
 exp_name: prune_test
-output_dir: 'src/pruning/out/prune_test'
+output_dir: 'src/pruning/out'
 model_path: 'models/count-@1l4h256d4lr01drop'
 init_sample_param: 1.0  # Not sure what this is for
 lr_sampler_for_pruning: 0.1

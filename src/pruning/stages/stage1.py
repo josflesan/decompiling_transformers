@@ -383,8 +383,40 @@ class CausalPruningStage1(PruningStage):
     def transform_graph(self):
         print("4. TRANSFORMING THE PRUNED GRAPH")
         
-        #TODO: implement this
-        pass
+        # Get final trained masks
+        masks = self.mask_sampler.sample_binary_masks(1).squeeze(0)
+        model_config = self.model_config
+        mapping_to_param_idx = self.mask_sampler.mapping_to_param_idx
+        
+        assert masks.dim() == 1
+        assert ((masks != 0) & (masks != 1)).sum().item() == 0
+        
+        def walk(config, masks, mapping_to_param_idx, path=()):
+            if isinstance(config, dict):
+                for key in config:
+                    config[key] = walk(
+                        config[key],
+                        masks,
+                        mapping_to_param_idx,
+                        path + (key,)
+                    )
+                return config
+            
+            elif isinstance(config, list):
+                new_list = []
+                for item in config:
+                    idx = mapping_to_param_idx[path + (item,)]
+                    if masks[idx].item() == 1:
+                        new_list.append(item)
+                
+                return new_list
+            else:
+                return config
+        
+        walk(model_config, masks, mapping_to_param_idx)
+        
+        # Save new config
+        self.model_config = model_config
     
     def save(self):
         # Save optimal ablation vectors and output training JSON
@@ -393,6 +425,10 @@ class CausalPruningStage1(PruningStage):
         with open(output_file, "w") as f:
             json.dump(self.output_dict, f, indent=4)
         
-        #TODO: save the pruned model too
+        # Save the pruned model
+        model_dir = self.config.full_output_dir / 'pruned_model_stage1'
+        model_dir.mkdir(exist_ok=True)
+        
+        self.model.save_pretrained(model_dir)
         
         print("4. OA VECTORS SAVED, OUTPUT FILE CREATED")

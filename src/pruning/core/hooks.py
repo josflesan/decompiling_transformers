@@ -31,7 +31,8 @@ class GPT2ComponentHooks:
         model,
         config,
         mapping_to_param_idx,
-        logger=None
+        logger=None,
+        linearLN=True
     ):
         self.model = model
         
@@ -44,14 +45,13 @@ class GPT2ComponentHooks:
         self.mapping_to_param_idx = mapping_to_param_idx
         self.logger = logger
         self.device = self.model.device
-        self.linearLN = self.full_config.stage_config.linear_ln
+        self.linearLN = linearLN
         self.hooks =[]
         self.activations = {}
         self.ln_1 = {}
         self.ln_2 = {}
         
         # Set mask sampler
-        #TODO: change this to the appropriate mask sampler
         self.mask_sampler = None
         
         # Define model hooks
@@ -126,7 +126,7 @@ class GPT2ComponentHooks:
             num_heads, head_dim = self.model.transformer.h[layer].attn.num_heads, self.model.transformer.h[layer].attn.head_dim
             attention_by_head = input.view(bz * seq_len, num_heads, head_dim)
             attention_by_head_output = attention_by_head.transpose(0, 1) @ module.weight.view(num_heads, head_dim, d_model) # num_head, bz*seq_len, d_model
-            attention_by_head_output = self.mode.transformer.h[layer].attn.resid_dropout(attention_by_head_output)
+            attention_by_head_output = self.model.transformer.h[layer].attn.resid_dropout(attention_by_head_output)
             attention_by_head_output = attention_by_head_output.view(num_heads, bz, seq_len, d_model).unbind(dim=0)
             
             for head, attn in enumerate(attention_by_head_output):
@@ -153,7 +153,7 @@ class GPT2ComponentHooks:
             for activation_name in self.full_config[layer][activation][head]:
                 
                 # 1. Select the learned coefficient/mask for this input
-                coef = self.masks[:, self.mapping_to_param_idx[(layer, activation, head, activation_name)]]
+                coef = self.masks[:, self.mapping_to_param_idx[(layer, activation, head, activation_name)]].to(self.device)
                 
                 # 2. Mask the real activation signal using the coefficient
                 first_term = self.activations[activation_name] * coef.view(-1, 1, 1)
@@ -217,13 +217,13 @@ class GPT2ComponentHooks:
         
         summed_activation = torch.zeros_like(input[0])
         for activation_name in self.full_config[layer]["mlp"]:
-            coef = self.masks[:, self.mapping_to_param_idx[(layer, "mlp", activation_name)]]
+            coef = self.masks[:, self.mapping_to_param_idx[(layer, "mlp", activation_name)]].to(self.device)
             
             first_term = self.activations[activation_name] * coef.view(-1, 1, 1)
             oa = self.oa_vecs.input_vertex_oa[self.oa_vecs.to_in_oa_idx[activation_name]]
             second_term = oa.unsqueeze(0) * ((1 - coef) * (coef < 0.001).float()).unsqueeze(1) + \
                 oa.unsqueeze(0).detach() * ((1 - coef) * (coef >= 0.001).float()).unsqueeze(1)
-            summed_activation += first_term + second_term.unsqueeze(1)
+            summed_activation += (first_term + second_term.unsqueeze(1))
         
         oa = self.oa_vecs.output_vertex_oa[self.oa_vecs.to_out_oa_idx[(layer, "mlp")]]
         summed_activation += oa.view(1, 1, -1)
@@ -237,7 +237,6 @@ class GPT2ComponentHooks:
         output = module.forward(input_activation)
         self.activations[f"mlp-{layer}"] = output  # dropout included
         return output
-            
 
     def lm_head_hook(
         self,
@@ -254,30 +253,30 @@ class GPT2ComponentHooks:
         linear transformation instead of the original LN.
 
         Args:
-            module (nn.Module): _description_
-            input (torch.Tensor): _description_
-            output (torch.Tensor): _description_
+            module (nn.Module): transformer module associated with the hook
+            input (torch.Tensor): the original input tensor
+            output (torch.Tensor): the original output tensor
 
         Returns:
-            _type_: _description_
+            torch.Tensor: the adjusted output tensor
         """
         
         summed_activation = torch.zeros_like(input[0])
         for activation_name in self.full_config["lm_head"]:
-            coef = self.masks[:, self.mapping_to_param_idx[("lm_head", activation_name)]]
+            coef = self.masks[:, self.mapping_to_param_idx[("lm_head", activation_name)]].to(self.device)
             
             first_term = self.activations[activation_name] * coef.view(-1, 1, 1)
             oa = self.oa_vecs.input_vertex_oa[self.oa_vecs.to_in_oa_idx[activation_name]]
             second_term = oa.unsqueeze(0) * ((1 - coef) * (coef < 0.001).float()).unsqueeze(1) + \
                 oa.unsqueeze(0).detach() * ((1 - coef) * (coef >= 0.001).float()).unsqueeze(1)
             
-            summed_activation += first_term + second_term.unsqueeze(1)
+            summed_activation += (first_term + second_term.unsqueeze(1))
             
-        oa = self.oa_vecs.output_vertex_oa[self.oa_vecs.to_out_oa_idx[("lm_head",)]].exp()
+        oa = self.oa_vecs.output_vertex_oa[self.oa_vecs.to_out_oa_idx[("lm_head",)]]
         summed_activation += oa.view(1, 1, -1)
         
         if self.linearLN:
-            ln_var = self.oa_vecs.ln_var[self.oa_vecs.to_LN_idx[("lm_head",)]].exp()
+            ln_var = self.oa_vecs.ln_var[self.oa_vecs.to_ln_idx[("lm_head",)]].exp()
             input_activation = self._linear_layer_norm(self.ln_f, summed_activation, ln_var)
         else:
             input_activation = self.ln_f(summed_activation)

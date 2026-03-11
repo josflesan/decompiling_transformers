@@ -1,0 +1,8 @@
+[
+    {
+        "attn": "GPT2Attention(\n  (c_attn): Conv1D(nf=768, nx=256)\n  (c_proj): Conv1D(nf=256, nx=256)\n  (attn_dropout): Dropout(p=0.1, inplace=False)\n  (resid_dropout): Dropout(p=0.1, inplace=False)\n)",
+        "mlp": "GPT2MLP(\n  (c_fc): Conv1D(nf=1024, nx=256)\n  (c_proj): Conv1D(nf=256, nx=1024)\n  (act): NewGELUActivation()\n  (dropout): Dropout(p=0.1, inplace=False)\n)",
+        "ln_1": "LayerNorm((256,), eps=1e-05, elementwise_affine=True)",
+        "ln_2": "LayerNorm((256,), eps=1e-05, elementwise_affine=True)"
+    }
+]

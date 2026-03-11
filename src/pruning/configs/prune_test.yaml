@@ -3,7 +3,17 @@ device: mps
 exp_name: prune_test
 output_dir: 'src/pruning/out/prune_test'
 model_path: 'models/count-@1l4h256d4lr01drop'
+init_sample_param: 1.0  # Not sure what this is for
 
 stage_config:
   name: "stage1"
   linear_ln: True
+  lamb: 1e-3
+  num_steps: 1000
+
+task_config:
+  name: counting
+  batch_size: 1
+  train_length_range: [0, 150]
+  val_length_range: [0, 150]
+  max_test_length: 150

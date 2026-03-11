@@ -5,7 +5,7 @@ from copy import deepcopy
 from functools import partial
 from itertools import product
 
-from OptimalAblationVectors import OptimalAblationVectors
+from pruning.core.OptimalAblationVectors import OptimalAblationVectors
 
 class GPT2ComponentHooks:
     """

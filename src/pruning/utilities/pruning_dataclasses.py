@@ -33,7 +33,7 @@ class PruningRunConfig:
     output_dir: str
     model_path: str
     task_config: TaskConfig
-    stage_config: StageConfig
+    pruning_stages: List[StageConfig]
     lr_sampler_for_pruning: float
     lr_ln_var_for_pruning: float
     lr_oa_for_pruning: float

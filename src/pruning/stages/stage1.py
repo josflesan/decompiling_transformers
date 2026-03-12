@@ -274,16 +274,19 @@ class CausalPruningStage1(PruningStage):
             if nan_count > 0:
                 self.logger.warning("sum NaN ", nan_count)
             
+            all_sample_p = torch.cat([p.data.detach().view(-1) for p in self.mask_sampler.parameters()], dim=0)
             self.metrics_logger.log(
-                stage=self.stage_idx,
+                stage=f"Stage {self.stage_idx + 1}",
                 step=current_step,
+                split="train",
                 kl_div=loss.item(),
                 task_loss=task_loss,
                 reg_edge=reg_edge,
                 reg_node=reg_node,
                 loss=loss.item(),
                 oa_grad_norm=oa_grad_norm,
-                sampler_grad_norm=sampler_grad_norm
+                sampler_grad_norm=sampler_grad_norm,
+                sampler_params=all_sample_p.cpu().tolist()
             )
             
             # Logging
@@ -292,8 +295,6 @@ class CausalPruningStage1(PruningStage):
                 all_sample_p = torch.cat([p.data.detach().view(-1) for p in self.mask_sampler.parameters()], dim=0)
                 hist, bin_edges = torch.histogram(all_sample_p.cpu(), bins=5)
                 self.logger("Histogram of Sampling Params", "\nhist", hist, "\nbin edges", bin_edges)
-                
-                #TODO: log histogram of sampling parameters
                 
                 if all_sample_p.max().item() < -2:
                     self.logger.error("All pruned, training failed. Stopping early...")
@@ -317,7 +318,9 @@ class CausalPruningStage1(PruningStage):
             if (current_step + 1) == 5000:
                 break
             
-            break #TODO: remove this
+            #TODO: Remove this
+            if current_step == 10:
+                break
     
     def val(self):
         num_test_step = 200
@@ -361,10 +364,22 @@ class CausalPruningStage1(PruningStage):
                     reduction='batchmean'
                 ).item()
                 
+                self.metrics_logger.log(
+                    stage=f"Stage {self.stage_idx + 1}",
+                    step=current_step,
+                    split="val",
+                    kl_div=kl_div,
+                    task_loss=task_loss,
+                    acc_task=num_correct / batch_size,
+                    acc_match=num_match / batch_size
+                )
+                
                 if current_step + 1 == num_test_step:
                     break
                 
-                break  #TODO: Remove this
+                #TODO: Remove this
+                if current_step == 10:
+                    break
             
         acc_match = num_match / (num_test_step * batch_size)
         acc_task = num_correct / (num_test_step * batch_size)

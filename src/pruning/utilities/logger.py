@@ -5,6 +5,9 @@ def setup_logger(log_dir, name="pruning"):
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     
+    # Remove previous metrics
+    (log_dir / 'run.log').unlink(missing_ok=True)
+    
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
     

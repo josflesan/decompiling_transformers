@@ -1,3 +1,5 @@
+import logging
+
 from abc import ABC, abstractmethod
 from pathlib import Path
 from transformers import GPT2LMHeadModel
@@ -6,6 +8,7 @@ from data.CustomCollator import CustomCollator
 from pruning.tasks.registry import get_task
 from pruning.utilities.pruning_dataclasses import PruningRunConfig
 from pruning.utilities.pruning_utils import get_full_possible_config_for_pruning
+from pruning.utilities.metrics_logger import MetricsLogger
 
 class PruningStage(ABC):
     """
@@ -14,11 +17,17 @@ class PruningStage(ABC):
     this abstract class.
     """
     
-    def __init__(self, config: PruningRunConfig, stage_idx: int):
-        #TODO: this will need to receive the logger too eventually
-        
+    def __init__(
+        self,
+        config: PruningRunConfig,
+        stage_idx: int,
+        logger: logging.Logger,
+        metrics_logger: MetricsLogger
+    ): 
         self.config = config
         self.stage_idx = stage_idx
+        self.logger = logger
+        self.metrics_logger = metrics_logger
         
         # Initialize output dict and models
         self.output_config_path = config.full_output_dir / 'args.json'
@@ -69,9 +78,16 @@ class PruningStage(ABC):
         4. Intermediate Model Saving
         """
         
-        #TODO: logging missing
-        #TODO: might not be well-defined
+        self.logger.info(f"1. Pruning Stage {self.stage_idx + 1} training...")
         self.train()
+        
+        self.logger.info(f"2. Pruning Stage {self.stage_idx + 1} validation...")
         self.val()
+        
+        self.logger.info(f"3. Pruning Stage {self.stage_idx + 1} graph transformation...")
         self.transform_graph()
+        
+        self.logger.info(f"4. Pruning Stage {self.stage_idx + 1} saving...")
         self.save()
+        
+        self.logger.info(f"Pruning Stage {self.stage_idx + 1} complete!\n")

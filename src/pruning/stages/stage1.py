@@ -1,4 +1,5 @@
 import json
+import logging
 import torch
 import torch.nn.functional as F
 from collections import defaultdict
@@ -14,12 +15,17 @@ from pruning.core.hooks import GPT2ComponentHooks
 from pruning.core.OptimalAblationVectors import OptimalAblationVectors
 from pruning.core.mask_samplers import ComponentMaskSampler
 from pruning.stages.base import PruningStage
+from pruning.utilities.metrics_logger import MetricsLogger
 
 class CausalPruningStage1(PruningStage):
-    def __init__(self, config, stage_idx: int):
-        #TODO: logging is still missing
-        
-        super().__init__(config, stage_idx)
+    def __init__(
+        self,
+        config,
+        stage_idx: int,
+        logger: logging.Logger,
+        metrics_logger: MetricsLogger
+    ):
+        super().__init__(config, stage_idx, logger, metrics_logger)
         
         # -------------- Stage-specific setup --------------
         self.mask_sampler = ComponentMaskSampler(self.model_config)
@@ -63,7 +69,7 @@ class CausalPruningStage1(PruningStage):
             # Log the variance tensor
             self.converted_ln_var = self.converted_ln_var.log()
         else:
-            print("USING REAL LAYERNORM")
+            self.logger.info("USING REAL LAYERNORM")
 
         # Initialize the Optimal Ablation Vectors
         self.oa_vecs = OptimalAblationVectors(
@@ -220,8 +226,6 @@ class CausalPruningStage1(PruningStage):
             weight_decay=0
         )
         
-        print("1. STARTING TRAINING LOOP")
-        
         for current_step, batch in enumerate(dataloader):
             # Move to device
             batch = {k: v.to(self.config.torch_device).repeat(num_repeat, *([1] * (v.dim() - 1))) for k, v in batch.items()}
@@ -257,8 +261,10 @@ class CausalPruningStage1(PruningStage):
             loss.backward()
             
             # Clip gradient norms and take step
-            training_logs["oa_grad_norm"].append(torch.nn.utils.clip_grad_norm_(self.oa_vecs.parameters(), max_norm=float('inf')).item())
-            training_logs["sampler_grad_norm"].append(torch.nn.utils.clip_grad_norm_(self.mask_sampler.parameters(), max_norm=float('inf')).item())
+            oa_grad_norm = torch.nn.utils.clip_grad_norm_(self.oa_vecs.parameters(), max_norm=float('inf')).item()
+            sampler_grad_norm = torch.nn.utils.clip_grad_norm_(self.mask_sampler.parameters(), max_norm=float('inf')).item()
+            training_logs["oa_grad_norm"].append(oa_grad_norm)
+            training_logs["sampler_grad_norm"].append(sampler_grad_norm)
             torch.nn.utils.clip_grad_norm_(self.mask_sampler.parameters(), 5)
             sampling_opt.step()
             oa_optimizer.step()
@@ -266,23 +272,37 @@ class CausalPruningStage1(PruningStage):
             # Log warning if any mask parameters are NaN
             nan_count = sum(p.isnan().sum().item() for p in self.mask_sampler.parameters())
             if nan_count > 0:
-                print("WARNING: sum NaN ", nan_count)
+                self.logger.warning("sum NaN ", nan_count)
+            
+            self.metrics_logger.log(
+                stage=self.stage_idx,
+                step=current_step,
+                kl_div=loss.item(),
+                task_loss=task_loss,
+                reg_edge=reg_edge,
+                reg_node=reg_node,
+                loss=loss.item(),
+                oa_grad_norm=oa_grad_norm,
+                sampler_grad_norm=sampler_grad_norm
+            )
             
             # Logging
             if (current_step + 1) % log_interval == 0:
-                #TODO: log the average training loss in the logs
+                self.logger({k: sum(v) / len(v) for k, v in training_logs.items()})
                 all_sample_p = torch.cat([p.data.detach().view(-1) for p in self.mask_sampler.parameters()], dim=0)
                 hist, bin_edges = torch.histogram(all_sample_p.cpu(), bins=5)
+                self.logger("Histogram of Sampling Params", "\nhist", hist, "\nbin edges", bin_edges)
+                
                 #TODO: log histogram of sampling parameters
                 
                 if all_sample_p.max().item() < -2:
-                    print("All pruned, training is failed. Stop early...")
+                    self.logger.error("All pruned, training failed. Stopping early...")
                     break
                 
                 if self.config.baseline_loss and (sum(training_logs['kl_div']) / len(training_logs['kl_div'])) > run_config.baseline_loss:
                     patience -= 1
                     if patience == 0:
-                        print("Loss stuck at high value, training is failed. Stop early...")
+                        self.logger.error("Loss stuck at high value, training failed. Stopping early...")
                         break
                 else:
                     patience = 3
@@ -308,8 +328,6 @@ class CausalPruningStage1(PruningStage):
         batch_size = self.config.pruning_stages[self.stage_idx].batch_size
         dataloader = DataLoader(self.val_dataset, batch_size=batch_size, shuffle=False, collate_fn=self.collator)
         loss_func = torch.nn.CrossEntropyLoss()
-        
-        print("2. START VALIDATION")
         
         with torch.no_grad():
             for current_step, batch in enumerate(dataloader):
@@ -355,8 +373,7 @@ class CausalPruningStage1(PruningStage):
         
         masks = self.mask_sampler.sample_binary_masks(1).squeeze(0)
         num_edges = (masks == 1).sum().item()
-        print(f"After Pruning Edge Count: {num_edges}")
-        # convert_mask_to_config_(masks, model_config, mask_sampler.mapping_to_param_idx)
+        self.logger.info(f"After Pruning Edge Count: {num_edges}")
         
         # Prepare output dictionary
         self.output_dict[f"result_patching_performance_global_iteration_0"] = {
@@ -368,9 +385,6 @@ class CausalPruningStage1(PruningStage):
             "coef": self.lamb
         }
         
-        #TODO: log end of global iteration
-        print("3. FINISHED VALIDATION")
-        
         self.output_dict['result_patching_config_global_iteration_0'] = deepcopy(self.model_config)
         self.hooked_model.remove_hooks()
         
@@ -381,8 +395,6 @@ class CausalPruningStage1(PruningStage):
         self.output_dict['task_loss'] = task_loss
 
     def transform_graph(self):
-        print("4. TRANSFORMING THE PRUNED GRAPH")
-        
         # Get final trained masks
         masks = self.mask_sampler.sample_binary_masks(1).squeeze(0)
         model_config = self.model_config
@@ -430,5 +442,3 @@ class CausalPruningStage1(PruningStage):
         model_dir.mkdir(exist_ok=True)
         
         self.model.save_pretrained(model_dir)
-        
-        print("4. OA VECTORS SAVED, OUTPUT FILE CREATED")

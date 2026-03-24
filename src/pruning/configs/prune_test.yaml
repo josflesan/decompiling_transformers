@@ -1,0 +1,24 @@
+seed: 0
+device: mps
+exp_name: prune_test
+output_dir: 'src/pruning/out'
+model_path: 'models/count-%2l4h256d4lr01drop'
+init_sample_param: 8  # sigmoid(8) approx 1
+lr_sampler_for_pruning: 0.1
+lr_ln_var_for_pruning: 0.1
+lr_oa_for_pruning: 0.002
+
+pruning_stages:
+
+  - name: stage1
+    linear_ln: True
+    lamb: 0.00000065
+    num_steps: 1000
+    batch_size: 120
+    num_repeat: 12
+
+task_config:
+  name: counting
+  train_length_range: [0, 100]
+  val_length_range: [0, 150]
+  max_test_length: 100

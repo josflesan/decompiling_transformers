@@ -28,7 +28,7 @@ class CausalPruningStage1(PruningStage):
         super().__init__(config, stage_idx, logger, metrics_logger)
         
         # -------------- Stage-specific setup --------------
-        self.mask_sampler = ComponentMaskSampler(self.model_config)
+        self.mask_sampler = ComponentMaskSampler(self.model_config).to(self.config.torch_device)
         if self.config.init_sample_param:
             self.mask_sampler.sample_params.data *= self.config.init_sample_param
         
@@ -39,9 +39,11 @@ class CausalPruningStage1(PruningStage):
             self.mask_sampler.mapping_to_param_idx,
             linearLN=self.linear_LN
         )
+        self.logger.info(f"Mask Param Names: {[n for n, p in self.mask_sampler.named_parameters()]}")
+        self.logger.info(f"Total Edge Count: {sum(p.numel() for p in self.mask_sampler.parameters())}")
         
         # Compute the expected variance estimates of LayerNorm inputs
-        self.converted_ln_var = torch.zeros(len(self.mask_sampler.output_vertex))
+        converted_ln_var = torch.zeros(len(self.mask_sampler.output_vertex))
         if self.linear_LN:
             # Compute expected variance estimates
             ln_var = self._estimate_ln_var(
@@ -58,16 +60,16 @@ class CausalPruningStage1(PruningStage):
                 match output_v:
                     # LN1
                     case (layer, act, head):
-                        self.converted_ln_var[i] = ln_var[layer * 2]
+                        converted_ln_var[i] = ln_var[layer * 2].item()
                     # LN2
-                    case (layer, mlp):
-                        self.converted_ln_var[i] = ln_var[layer * 2 + 1]
+                    case (layer, "mlp"):
+                        converted_ln_var[i] = ln_var[layer * 2 + 1].item()
                     # LNF
-                    case (lm_head,):
-                        self.converted_ln_var[i] = ln_var[-1]
-                
+                    case ("lm_head",):
+                        converted_ln_var[i] = ln_var[-1].item()
+            
             # Log the variance tensor
-            self.converted_ln_var = self.converted_ln_var.log()
+            converted_ln_var = converted_ln_var.log()
         else:
             self.logger.info("USING REAL LAYERNORM")
 
@@ -78,27 +80,15 @@ class CausalPruningStage1(PruningStage):
             ln_vertex=self.mask_sampler.output_vertex,
             mlp_vertex=None,
             model_config=self.model.config,
-            init_var=self.converted_ln_var
+            init_var=converted_ln_var
         ).to(self.config.torch_device)
         self._accumulate_biases_oa()
         
         # Initialize lamb and num_steps
         self.lamb = self.config.pruning_stages[self.stage_idx].lamb
         self.num_steps = self.config.pruning_stages[self.stage_idx].num_steps
-        
-        #TODO: figure out how to implement this check in refactor    
-        # if mask_sampler.sample_params.numel() == 0:
-        #     hooked_model.remove_hooks()
-        #     # output_dict["result_patching_performance_global_iteration_0"] = {
-        #     #     "acc_match": acc_match,
-        #     #     "acc_task": acc_task,
-        #     #     "task_loss": task_loss,
-        #     #     "kl_div": kl_div,
-        #     #     "num_edges": 0,
-        #     #     "coef": lamb
-        #     # }
-        #     output_dict['result_patching_config_global_iteration_0'] = deepcopy(model_config)
 
+    
     @torch.no_grad()
     def _estimate_ln_var(
         self,
@@ -227,6 +217,22 @@ class CausalPruningStage1(PruningStage):
         )
         
         for current_step, batch in enumerate(dataloader):
+            
+            #TODO: figure out how to save metrics upon failure in refactor    
+            if self.mask_sampler.sample_params.numel() == 0:
+                self.hooked_model.remove_hooks()
+                # output_dict["result_patching_performance_global_iteration_0"] = {
+                #     "acc_match": acc_match,
+                #     "acc_task": acc_task,
+                #     "task_loss": task_loss,
+                #     "kl_div": kl_div,
+                #     "num_edges": 0,
+                #     "coef": lamb
+                # }
+                self.output_dict['result_patching_config_global_iteration_0'] = deepcopy(self.model_config)
+                self.logger.info("Nothing to prune, exiting...")
+                break
+            
             # Move to device
             batch = {k: v.to(self.config.torch_device).repeat(num_repeat, *([1] * (v.dim() - 1))) for k, v in batch.items()}
             labels = batch.pop("labels")
@@ -238,7 +244,10 @@ class CausalPruningStage1(PruningStage):
             logits = self.hooked_model(masks=masks, oa_vecs=self.oa_vecs, **batch).logits
             
             # Compute task loss and pruning loss
-            task_loss = F.cross_entropy(logits[:, :-1].flatten(end_dim=1), labels[:, 1:].flatten()).item()
+            task_loss = F.cross_entropy(
+                logits[:, :-1].flatten(end_dim=1),
+                labels[:, 1:].flatten()
+            ).item()
             target_logits = target_logits[:, :-1][labels[:, 1:] != -100]
             logits = logits[:, :-1][labels[:, 1:] != -100]
             loss = F.kl_div(
@@ -246,15 +255,16 @@ class CausalPruningStage1(PruningStage):
                 log_target=True,
                 
                 #TODO: is this correct?
-                reduction='batchmean'
+                reduction='mean'
             )
             
             training_logs['kl_div'].append(loss.item())
             training_logs['task_loss'].append(task_loss)
             penalty, (reg_edge, reg_node) = self.mask_sampler.get_penalty(gamma)
             training_logs['reg_edge'].append(reg_edge)
-            training_logs['reg_node'].append(reg_node)        
-            loss = loss + self.lamb * penalty
+            training_logs['reg_node'].append(reg_node)     
+            
+            loss = loss + self.lamb * penalty    
             
             sampling_opt.zero_grad()
             oa_optimizer.zero_grad()
@@ -291,16 +301,16 @@ class CausalPruningStage1(PruningStage):
             
             # Logging
             if (current_step + 1) % log_interval == 0:
-                self.logger({k: sum(v) / len(v) for k, v in training_logs.items()})
+                self.logger.info({k: sum(v) / len(v) for k, v in training_logs.items()})
                 all_sample_p = torch.cat([p.data.detach().view(-1) for p in self.mask_sampler.parameters()], dim=0)
-                hist, bin_edges = torch.histogram(all_sample_p.cpu(), bins=5)
-                self.logger("Histogram of Sampling Params", "\nhist", hist, "\nbin edges", bin_edges)
+                # hist, bin_edges = torch.histogram(all_sample_p.cpu(), bins=5)
+                # self.logger.info("Histogram of Sampling Params", "\nhist", hist, "\nbin edges", bin_edges)
                 
                 if all_sample_p.max().item() < -2:
                     self.logger.error("All pruned, training failed. Stopping early...")
                     break
                 
-                if self.config.baseline_loss and (sum(training_logs['kl_div']) / len(training_logs['kl_div'])) > run_config.baseline_loss:
+                if self.config.baseline_loss and (sum(training_logs['kl_div']) / len(training_logs['kl_div'])) > self.config.baseline_loss:
                     patience -= 1
                     if patience == 0:
                         self.logger.error("Loss stuck at high value, training failed. Stopping early...")
@@ -308,19 +318,20 @@ class CausalPruningStage1(PruningStage):
                 else:
                     patience = 3
                 
+                # If there are ambivalent masks left, increase number of steps
                 if ((all_sample_p > -1) & (all_sample_p < 1)).sum().item():
-                    count_down = self.num_steps + 1
+                    countdown = self.num_steps + 1
+                
+                training_logs = defaultdict(list)
             
             # Early Stopping
             countdown -= 1
             if countdown == 0:
                 break
-            if (current_step + 1) == 5000:
+            if (current_step + 1) == 5000:  #TODO: change this back to 5000
                 break
-            
-            #TODO: Remove this
-            if current_step == 10:
-                break
+        
+        self.logger.info(f"Finished training ({current_step + 1} steps)")
     
     def val(self):
         num_test_step = 200
@@ -329,18 +340,24 @@ class CausalPruningStage1(PruningStage):
         task_loss = 0
         kl_div = 0
         batch_size = self.config.pruning_stages[self.stage_idx].batch_size
-        dataloader = DataLoader(self.val_dataset, batch_size=batch_size, shuffle=False, collate_fn=self.collator)
+        dataloader = DataLoader(self.train_dataset, batch_size=batch_size, shuffle=False, collate_fn=self.collator)
         loss_func = torch.nn.CrossEntropyLoss()
+        
+        total_batches = 0
+        total_examples = 0
         
         with torch.no_grad():
             for current_step, batch in enumerate(dataloader):
                 # Move batch tensors to device
                 batch = {k: v.to(self.config.torch_device) for k, v in batch.items()}
+                current_bz = batch['input_ids'].size(0)
+                total_examples += current_bz
+                total_batches += 1
                 labels = batch.pop("labels")
                 
                 target_logits = self.original_model(**batch).logits
                 
-                masks = self.mask_sampler.sample_binary_masks(batch_size)
+                masks = self.mask_sampler.sample_binary_masks(current_bz)
                 logits = self.hooked_model(masks=masks, oa_vecs=self.oa_vecs, **batch).logits
                 
                 shift_target_logits = target_logits[:, :-1]
@@ -359,9 +376,7 @@ class CausalPruningStage1(PruningStage):
                 kl_div += F.kl_div(
                     F.log_softmax(shift_logits[shift_labels != -100], dim=-1), F.log_softmax(shift_target_logits[shift_labels != -100], dim=-1),
                     log_target=True,
-                    
-                    #TODO: is this correct?
-                    reduction='batchmean'
+                    reduction='mean'
                 ).item()
                 
                 self.metrics_logger.log(
@@ -370,21 +385,17 @@ class CausalPruningStage1(PruningStage):
                     split="val",
                     kl_div=kl_div,
                     task_loss=task_loss,
-                    acc_task=num_correct / batch_size,
-                    acc_match=num_match / batch_size
+                    acc_task=num_correct / total_examples,
+                    acc_match=num_match / total_examples
                 )
                 
                 if current_step + 1 == num_test_step:
                     break
-                
-                #TODO: Remove this
-                if current_step == 10:
-                    break
             
-        acc_match = num_match / (num_test_step * batch_size)
-        acc_task = num_correct / (num_test_step * batch_size)
-        task_loss /= num_test_step
-        kl_div /= num_test_step
+        acc_match = num_match / total_examples
+        acc_task = num_correct / total_examples
+        task_loss /= total_batches
+        kl_div /= total_batches
         
         masks = self.mask_sampler.sample_binary_masks(1).squeeze(0)
         num_edges = (masks == 1).sum().item()
@@ -400,7 +411,6 @@ class CausalPruningStage1(PruningStage):
             "coef": self.lamb
         }
         
-        self.output_dict['result_patching_config_global_iteration_0'] = deepcopy(self.model_config)
         self.hooked_model.remove_hooks()
         
         # Save optimal ablation vectors and output training results
@@ -444,6 +454,7 @@ class CausalPruningStage1(PruningStage):
         
         # Save new config
         self.model_config = model_config
+        self.output_dict['result_patching_config_global_iteration_0'] = deepcopy(self.model_config)
     
     def save(self):
         # Save optimal ablation vectors and output training JSON

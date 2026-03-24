@@ -175,7 +175,11 @@ class GPT2ComponentHooks:
             
             if self.linearLN:
                 ln_var = self.oa_vecs.ln_var[self.oa_vecs.to_ln_idx[(layer, activation, head)]].exp()
-                input_activations.append(self._linear_layer_norm(self.ln_1[layer], summed_activation, ln_var))
+                input_activations.append(self._linear_layer_norm(
+                    module=self.ln_1[layer],
+                    input=summed_activation,
+                    scalar=ln_var
+                ))
             else:
                 input_activations.append(self.ln_1[layer](summed_activation))
             

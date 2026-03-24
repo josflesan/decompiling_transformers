@@ -39,6 +39,7 @@ class PruningRunConfig:
     lr_oa_for_pruning: float
     
     init_sample_param: Optional[float] = None
+    baseline_loss: Optional[float] = None
     full_output_dir: Path = field(init=False)
     torch_device: torch.device = field(init=False)
     

@@ -20,13 +20,13 @@ class CountingTask(Task):
             max_test_length=self.config.max_test_length
         )
         
-        val_dataset = CountDataset(
-            tokenizer=tokenizer,
-            length_range=self.config.val_length_range,
-            max_test_length=self.config.max_test_length
-        )
+        # val_dataset = CountDataset(
+        #     tokenizer=tokenizer,
+        #     length_range=self.config.val_length_range,
+        #     max_test_length=self.config.max_test_length
+        # )
         
         return {
             "train": train_dataset,
-            "val": val_dataset,
+            "val": train_dataset,
         }

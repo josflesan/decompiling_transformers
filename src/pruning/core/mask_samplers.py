@@ -6,7 +6,7 @@ from typing import Union, Tuple
 
 class ComponentMaskSampler(nn.Module):
     """
-    Something something
+    Component Mask Sampler for Stage 1 Pruning
     """
     
     def __init__(self, config):
@@ -116,128 +116,134 @@ class ComponentMaskSampler(nn.Module):
         def zero_edge(idx, condition): 
             masks[:, idx].masked_fill_(condition, 0)
         
-        # --------------------------------------------------------------------------------
-        # 1) FORWARD PASS - Reachability from inputs
-        # --------------------------------------------------------------------------------
+        with torch.device(masks.device):
+            
+            with torch.no_grad():
         
-        reachable_to_input = {
-            "wte": torch.ones(bz, dtype=torch.bool, device=masks.device),
-            "wpe": torch.ones(bz, dtype=torch.bool, device=masks.device),
-        }
-        
-        for layer, num_heads in enumerate(self.num_head_per_layer):
-            # ----- Attention Heads
-            for head in range(num_heads):
-                head_reach = []
+                # --------------------------------------------------------------------------------
+                # 1) FORWARD PASS - Reachability from inputs
+                # --------------------------------------------------------------------------------
                 
-                for act in ["q", "k", "v"]:
-                    inputs = self.config[layer][act][head]
-                    reach = torch.zeros(bz, dtype=torch.bool, device=masks.device)
-                    
-                    for inp in inputs:
-                        idx = self.mapping_to_param_idx[(layer, act, head, inp)]
-                        reach |= edge_active(idx) & reachable_to_input[inp]
-                    
-                    head_reach.append(reach)
+                reachable_to_input = {
+                    "wte": torch.ones(bz, dtype=torch.bool, device=masks.device),
+                    "wpe": torch.ones(bz, dtype=torch.bool, device=masks.device),
+                }
                 
-                reachable_to_input[f"attn_output-{layer}-{head}"] = torch.stack(head_reach).all(dim=0)
+                for layer, num_heads in enumerate(self.num_head_per_layer):
+                    # ----- Attention Heads
+                    for head in range(num_heads):
+                        head_reach = []
+                        
+                        for act in ["q", "k", "v"]:
+                            inputs = self.config[layer][act][head]
+                            reach = torch.zeros(bz, dtype=torch.bool, device=masks.device)
+                            
+                            for inp in inputs:
+                                idx = self.mapping_to_param_idx[(layer, act, head, inp)]
+                                reach |= edge_active(idx) & reachable_to_input[inp]
+                            
+                            head_reach.append(reach)
+                        
+                        reachable_to_input[f"attn_output-{layer}-{head}"] = torch.stack(head_reach).all(dim=0)
 
-            # ----- MLP
-            mlp_reach = torch.zeros(bz, dtype=torch.bool, device=masks.device)
-            
-            for inp in self.config[layer]['mlp']:
-                idx = self.mapping_to_param_idx[(layer, "mlp", inp)]
-                mlp_reach |= edge_active(idx) & reachable_to_input[inp]
+                    # ----- MLP
+                    mlp_reach = torch.zeros(bz, dtype=torch.bool, device=masks.device)
+                    
+                    for inp in self.config[layer]['mlp']:
+                        idx = self.mapping_to_param_idx[(layer, "mlp", inp)]
+                        mlp_reach |= edge_active(idx) & reachable_to_input[inp]
 
-            reachable_to_input[f"mlp-{layer}"] = mlp_reach
-    
-        # --------------------------------------------------------------------------------
-        # 2) PRUNE EDGES USING INPUT REACHABILITY
-        # --------------------------------------------------------------------------------
+                    reachable_to_input[f"mlp-{layer}"] = mlp_reach
         
-        for layer, num_heads in enumerate(self.num_head_per_layer):
-            for head in range(num_heads):
-                out_node = f"attn_output-{layer}-{head}"
-                dangling_out = ~reachable_to_input[out_node]
+            # --------------------------------------------------------------------------------
+            # 2) PRUNE EDGES USING INPUT REACHABILITY
+            # --------------------------------------------------------------------------------
+            
+            for layer, num_heads in enumerate(self.num_head_per_layer):
+                for head in range(num_heads):
+                    out_node = f"attn_output-{layer}-{head}"
+                    dangling_out = ~reachable_to_input[out_node]
+                    
+                    for act in ["q", "k", "v"]:
+                        for inp in self.config[layer][act][head]:
+                            idx = self.mapping_to_param_idx[(layer, act, head, inp)]
+                            dangling = dangling_out | ~reachable_to_input[inp]
+                            zero_edge(idx, dangling)
                 
-                for act in ["q", "k", "v"]:
-                    for inp in self.config[layer][act][head]:
-                        idx = self.mapping_to_param_idx[(layer, act, head, inp)]
-                        dangling = dangling_out | ~reachable_to_input[inp]
-                        zero_edge(idx, dangling)
+                mlp_out = f"mlp-{layer}"
+                dangling_out = ~reachable_to_input[mlp_out]
+                
+                for inp in self.config[layer]["mlp"]:
+                    idx = self.mapping_to_param_idx[(layer, "mlp", inp)]
+                    dangling = dangling_out | ~reachable_to_input[inp]
+                    zero_edge(idx, dangling)
             
-            mlp_out = f"mlp-{layer}"
-            dangling_out = ~reachable_to_input[mlp_out]
+            for inp in self.config["lm_head"]:
+                idx = self.mapping_to_param_idx[("lm_head", inp)]
+                zero_edge(idx, ~reachable_to_input[inp])
             
-            for inp in self.config[layer]["mlp"]:
-                idx = self.mapping_to_param_idx[(layer, "mlp", inp)]
-                dangling = dangling_out | ~reachable_to_input[inp]
-                zero_edge(idx, dangling)
-        
-        for inp in self.config["lm_head"]:
-            idx = self.mapping_to_param_idx[("lm_head", inp)]
-            zero_edge(idx, ~reachable_to_input[inp])
-        
-        # --------------------------------------------------------------------------------
-        # 3) BACKWARD PASS - Reachability to outputs
-        # --------------------------------------------------------------------------------
-        
-        reachable_to_output = defaultdict(
-            lambda: torch.zeros(bz, dtype=torch.bool, device=masks.device)
-        )
-        
-        # Start from LM Head
-        for inp in self.config["lm_head"]:
-            idx = self.mapping_to_param_idx[("lm_head", inp)]
-            reachable_to_output[inp] |= edge_active(idx)
-        
-        for layer in reversed(range(len(self.num_head_per_layer))):
+            with torch.no_grad():
             
-            # ----- MLP
-            mlp_node = f"mlp-{layer}"
-            
-            for inp in self.config[layer]["mlp"]:
-                idx = self.mapping_to_param_idx[(layer, "mlp", inp)]
-                reachable_to_output[inp] |= (
-                    edge_active(idx) & reachable_to_output[mlp_node]
+                # --------------------------------------------------------------------------------
+                # 3) BACKWARD PASS - Reachability to outputs
+                # --------------------------------------------------------------------------------
+                
+                reachable_to_output = defaultdict(
+                    lambda: torch.zeros(bz, dtype=torch.bool, device=masks.device)
                 )
-            
-            # ----- Attention
-            for head in range(self.num_head_per_layer[layer]):
-                head_node = f"attn_output-{layer}-{head}"
-                reach_head = reachable_to_output[head_node]
                 
-                for act in ["q", "k", "v"]:
-                    for inp in self.config[layer][act][head]:
-                        idx = self.mapping_to_param_idx[(layer, act, head, inp)]
-                        reachable_to_output[inp] |= edge_active(idx) & reach_head
-        
-        # --------------------------------------------------------------------------------
-        # 4) PRUNE EDGES USING OUTPUT REACHABILITY
-        # --------------------------------------------------------------------------------
-        
-        for layer, num_heads in enumerate(self.num_head_per_layer):
-            for head in range(num_heads):
-                out_node = f"attn_output-{layer}-{head}"
-                dangling_out = ~reachable_to_output[out_node]
+                # Start from LM Head
+                for inp in self.config["lm_head"]:
+                    idx = self.mapping_to_param_idx[("lm_head", inp)]
+                    reachable_to_output[inp] |= edge_active(idx)
                 
-                for act in ["q", "k", "v"]:
-                    for inp in self.config[layer][act][head]:
-                        idx = self.mapping_to_param_idx[(layer, act, head, inp)]
-                        dangling = dangling_out | ~reachable_to_output[inp]
-                        zero_edge(idx, dangling)
+                for layer in reversed(range(len(self.num_head_per_layer))):
+                    
+                    # ----- MLP
+                    mlp_node = f"mlp-{layer}"
+                    
+                    for inp in self.config[layer]["mlp"]:
+                        idx = self.mapping_to_param_idx[(layer, "mlp", inp)]
+                        reachable_to_output[inp] |= (
+                            edge_active(idx) & reachable_to_output[mlp_node]
+                        )
+                    
+                    # ----- Attention
+                    for head in range(self.num_head_per_layer[layer]):
+                        head_node = f"attn_output-{layer}-{head}"
+                        reach_head = reachable_to_output[head_node]
+                        
+                        for act in ["q", "k", "v"]:
+                            for inp in self.config[layer][act][head]:
+                                idx = self.mapping_to_param_idx[(layer, act, head, inp)]
+                                reachable_to_output[inp] |= edge_active(idx) & reach_head
+                
+            # --------------------------------------------------------------------------------
+            # 4) PRUNE EDGES USING OUTPUT REACHABILITY
+            # --------------------------------------------------------------------------------
             
-            mlp_out = f"mlp-{layer}"
-            dangling_out = ~reachable_to_output[mlp_out]
+            for layer, num_heads in enumerate(self.num_head_per_layer):
+                for head in range(num_heads):
+                    out_node = f"attn_output-{layer}-{head}"
+                    dangling_out = ~reachable_to_output[out_node]
+                    
+                    for act in ["q", "k", "v"]:
+                        for inp in self.config[layer][act][head]:
+                            idx = self.mapping_to_param_idx[(layer, act, head, inp)]
+                            dangling = dangling_out | ~reachable_to_output[inp]
+                            zero_edge(idx, dangling)
+                
+                mlp_out = f"mlp-{layer}"
+                dangling_out = ~reachable_to_output[mlp_out]
+                
+                for inp in self.config[layer]["mlp"]:
+                    idx = self.mapping_to_param_idx[(layer, "mlp", inp)]
+                    dangling = dangling_out | ~reachable_to_output[inp]
+                    zero_edge(idx, dangling)
             
-            for inp in self.config[layer]["mlp"]:
-                idx = self.mapping_to_param_idx[(layer, "mlp", inp)]
-                dangling = dangling_out | ~reachable_to_output[inp]
-                zero_edge(idx, dangling)
-        
-        for inp in self.config["lm_head"]:
-            idx = self.mapping_to_param_idx[("lm_head", inp)]
-            zero_edge(idx, ~reachable_to_output[inp])
+            for inp in self.config["lm_head"]:
+                idx = self.mapping_to_param_idx[("lm_head", inp)]
+                zero_edge(idx, ~reachable_to_output[inp])
             
         return masks
     
@@ -277,4 +283,218 @@ class ComponentMaskSampler(nn.Module):
         
         masks = (self.sample_params > threshold).float().unsqueeze(0).expand(bz, -1)
         masks = self.prune_dangling_edges(masks)
+        return masks
+
+class FullPathsMaskSampler(ComponentMaskSampler):
+    """Path Mask Sampler for Pruning Stage 2"""
+    
+    def __init__(self, config, split_mlp):
+        super().__init__(config)
+        
+        output_vertex = set(self.output_vertex)
+        v_output_vertex = set()
+        mlp_output_vertex = set()
+        
+        # Config transformation stage 2
+        for k1 in config:
+            if type(config[k1]) == dict:
+                for k2 in config[k1]:
+                    
+                    # If this is an attention value node, convert component
+                    # into path from sending vertices to receiving vertices of
+                    # this node
+                    if k2 == "v":
+                        for k3 in config[k1][k2]:
+                            output_vertex.remove((k1, k2, k3))
+                            for item in config[k1][k2][k3]:
+                                v_output_vertex.add((k1, k2, k3, item))
+                    
+                    # If this is an MLP node and we are splitting, remove original
+                    # MLP node from the config and convert to series of paths
+                    # to each receiving vertex
+                    elif split_mlp and k2 == "mlp":
+                        output_vertex.remover((k1, k2))
+                        for item in config[k1][k2]:
+                            mlp_output_vertex.add((k1, k2, item))
+        
+        
+        self.output_vertex = list(output_vertex)
+        self.all_output_vertex = list(output_vertex.union(v_output_vertex).union(mlp_output_vertex))
+        self.mlp_output_vertex = list(mlp_output_vertex)
+        self.split_mlp = split_mlp
+        
+        self.sample_params.data = torch.ones_like(self.sample_params.data)
+    
+    def prune_dangling_edges(self, masks):
+        with torch.device(masks.device):
+            
+            bz = masks.size(0)
+            
+            def edge_active(idx):
+                return masks[:, idx] > 0
+        
+            def zero_edge(idx, dangling):
+                masks[:, idx].masked_fill_(dangling, 0)
+            
+            with torch.no_grad():
+                
+                # --------------------------------------------------------------------------------
+                # 1) FORWARD PASS - Reachability from inputs
+                # --------------------------------------------------------------------------------
+                
+                reachable_to_input = {
+                    "wte": torch.ones(bz, dtype=torch.bool, device=masks.device),
+                    "wpe": torch.ones(bz, dtype=torch.bool, device=masks.device)
+                }
+                
+                for layer, num_heads in enumerate(self.num_head_per_layer):
+                    
+                    # ----- Attention Heads
+                    for head in range(num_heads):
+                        reach_qk = []
+                        
+                        for act in ["q", "k"]:
+                            reach = [torch.zeros(bz, dtype=torch.bool, device=masks.device)]
+                            for input_v in self.config[layer][act][head]:
+                                reach.append(edge_active(self.mapping_to_param_idx[(layer, act, head, input_v)]) & reachable_to_input[input_v])
+                            reach = torch.stack(reach).any(dim=0)
+                            reach_qk.append(reach)
+                        
+                        for input_v in self.config[layer]["v"][head]:
+                            reach = edge_active(self.mapping_to_param_idx[(layer, "v", head, input_v)] & reachable_to_input[input_v])
+                            attn_reach = reach_qk[0] & reach_qk[1] & reach
+                            reachable_to_input[f"attn_output-{layer}-{head}-{input_v}"] = attn_reach
+
+                    
+                    # ----- MLP
+                    if not self.split_mlp:
+                        
+                        # If any of the individual split MLPs are reachable from input, 
+                        mlp_reach = [torch.zeros(bz, dtype=torch.bool, device=masks.device)]
+                        for input_v in self.config[layer]["mlp"]:
+                            mlp_reach.append(edge_active(self.mapping_to_param_idx[(layer, "mlp", input_v)]) & reachable_to_input[input_v])
+                        mlp_reach = torch.stack(mlp_reach).any(dim=0)
+                        
+                        reachable_to_input[f"mlp-{layer}"] = mlp_reach
+                    else:
+                        for input_v in self.config[layer]["mlp"]:
+                            mlp_reach = edge_active(self.mapping_to_param_idx[(layer, "mlp", input_v)]) & reachable_to_input[input_v]
+                            reachable_to_input[f"mlp-{layer}-{input_v}"] = mlp_reach
+            
+            # --------------------------------------------------------------------------------
+            # 2) PRUNE EDGES USING INPUT REACHABILITY
+            # --------------------------------------------------------------------------------
+            for layer, num_heads in enumerate(self.num_head_per_layer):
+                for head in range(num_heads):
+                    
+                    # Collect reachability to input for each head's sending vertex
+                    dangling_head = [torch.ones(bz, dtype=torch.bool(), device=masks.device)]
+                    
+                    # Consider value inputs and their output nodes first
+                    for input_v in self.config[layer]["v"][head]:
+                        out_node = f"attn_output-{layer}-{head}-{input_v}"
+                        dangling_out = ~reachable_to_input[out_node]
+                        dangling_head.append(dangling_out)
+                        
+                        # If either full path node is not reachable or the head output not reachable,
+                        # the path is dangling
+                        dangling = dangling_out | ~reachable_to_input[input_v]
+                        zero_edge(self.mapping_to_param_idx[(layer, "v", head, input_v)], dangling)
+                    
+                    # If the head output is fully "dead" we also zero out query and key paths (zero out the whole head)
+                    dangling_out = torch.stack(dangling_head).all(dim=0)
+                    for activation in ["q", "k"]:
+                        for input_v in self.config[layer][activation][head]:
+                            dangling = dangling_out | ~reachable_to_input[input_v]
+                            zero_edge(self.mapping_to_param_idx[(layer, activation, head, input_v)], dangling)
+                
+                # For each MLP output, prune if either full path node or output is not reachable
+                for input_v in self.config[layer]["mlp"]:
+                    out_node = f"mlp-{layer}" if not self.split_mlp else f"mlp-{layer}-{input_v}"
+                    dangling_out = ~reachable_to_input[out_node]
+                    dangling = dangling_out | ~reachable_to_input[input_v]
+                    zero_edge(self.mapping_to_param_idx[(layer, "mlp", input_v)], dangling)
+            
+            # For each output of the LM Head, zero out if not reachable
+            for input_v in self.config["lm_head"]:
+                dangling = ~reachable_to_input[input_v]
+                zero_edge(self.mapping_to_param_idx[("lm_head", input_v)], dangling)
+            
+            with torch.no_grad():
+                # --------------------------------------------------------------------------------
+                # 3) BACKWARD PASS - Reachability to outputs
+                # --------------------------------------------------------------------------------
+                
+                reachable_to_output = defaultdict(
+                    lambda: torch.zeros(bz, dtype=torch.bool, device=masks.device)
+                )
+                
+                # Start from LM Head
+                for input_v in self.config["lm_head"]:
+                    reachable_to_output[input_v] = edge_active(self.mapping_to_param_idx[("lm_head", input_v)])
+                
+                for layer in reversed(range(len(self.num_head_per_layer))):
+                    
+                    # ------- MLP nodes
+                    for input_v in self.config[layer]["mlp"]:
+                        # If the MLP node can reach the output and the input edge is active, path exists
+                        mlp_node = f"mlp-{layer}" if not self.split_mlp else f"mlp-{layer}-{input_v}"
+                        reach = edge_active(self.mapping_to_param_idx[(layer, "mlp", input_v)]) & reachable_to_output[mlp_node]
+                        reachable_to_output[input_v] = reachable_to_output[input_v] | reach
+                    
+                    # ------- Attention Heads
+                    for head in range(self.num_head_per_layer[layer]):
+                        
+                        # Determine whether each head can reach the output
+                        head_reach = [torch.zeros(bz, dtype=torch.bool, device=masks.device)]
+                        for input_v in self.config[layer]["v"][head]:
+                            # If the head can reach the output and input edge exists, path exists
+                            head_reach.append(reachable_to_output[f"attn_output-{layer}-{head}-{input_v}"])
+                            reach = edge_active(self.mapping_to_param_idx[(layer, "v", head, input_v)]) & reachable_to_output[f"attn_output-{layer}-{head}-{input_v}"]
+                            reachable_to_output[input_v] = reachable_to_output[input_v] | reach
+                        
+                        # If any head is completely dead, mark query and key paths as dead too
+                        head_reach = torch.stack(head_reach).any(dim=0)
+                        for act in ["q", "k"]:
+                            
+                            for input_v in self.config[layer][act][head]:
+                                reach = edge_active(self.mapping_to_param_idx[(layer, act, head, input_v)]) & head_reach
+                                reachable_to_output[input_v] = reachable_to_output[input_v] | reach
+            
+            # --------------------------------------------------------------------------------
+            # 4) PRUNE EDGES USING OUTPUT REACHABILITY
+            # --------------------------------------------------------------------------------
+            for layer, num_head in enumerate(self.num_head_per_layer):
+                for head in range(num_head):
+                    # Handle value outputs first
+                    dangling_head = [torch.ones(bz, dtype=torch.bool, device=masks.device)]
+                    
+                    for input_v in self.config[layer]['v'][head]:
+                        v_name = f"attn_output-{layer}-{head}-{input_v}"
+                        dangling_out = ~reachable_to_output[v_name]
+                        dangling_head.append(dangling_out)
+                        
+                        dangling = dangling_out | ~reachable_to_output[input_v]
+                        zero_edge(self.mapping_to_param_idx[(layer, "v", head, input_v)], dangling)
+                    
+                    # If head is completely dead (does not output anything)
+                    # Remove all query and key nodes pertaining to it
+                    dangling_out = torch.stack(dangling_head).all(dim=0)
+                    for activation in ["q", "k"]:
+                        for input_v in self.config[layer][activation][head]:
+                            dangling = dangling_out | ~reachable_to_output[input_v]
+                            zero_edge(self.mapping_to_param_idx[(layer, activation, head, input_v)], dangling)
+                
+                # For each MLP, if it cannot reach output, remove
+                for input_v in self.config[layer]["mlp"]:
+                    mlp_name = f"mlp-{layer}" if not self.split_mlp else f"mlp-{layer}-{input_v}"
+                    dangling_out = ~reachable_to_output[mlp_name]
+                    dangling = dangling_out | ~reachable_to_output[input_v]
+                    zero_edge(self.mapping_to_param_idx[(layer, "mlp", input_v)], dangling)
+            
+            # If the LM head cannot reach output, remove
+            for input_v in self.config["lm_head"]:
+                dangling = ~reachable_to_output[input_v]
+                zero_edge(self.mapping_to_param_idx[("lm_head", input_v)], dangling)
+            
         return masks

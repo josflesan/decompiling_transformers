@@ -3,11 +3,12 @@ from pathlib import Path
 from pruning.utilities.logger import setup_logger
 from pruning.utilities.metrics_logger import MetricsLogger
 from pruning.stages.stage1 import CausalPruningStage1
-# from pruning.stages.stage2 import CausalPruningStage2
+from pruning.stages.stage2 import CausalPruningStage2
 # from pruning.stages.stage3 import CausalPruningStage3
 
 STAGE_REGISTRY = {
-    "stage1": CausalPruningStage1
+    "stage1": CausalPruningStage1,
+    "stage2": CausalPruningStage2 
 }
 
 class CausalPruningPipeline:
@@ -36,9 +37,11 @@ class CausalPruningPipeline:
         
             stage_class = STAGE_REGISTRY[stage_name]
             
+            #TODO: Issue, this only allows us to run the whole pipeline (all stages).
+            # Would be nice to have a way to run each stage independently for testing and compute reasons
             stage = stage_class(
                 config=self.config,
-                stage_idx=stage_idx,
+                stage_idx=int(stage_name[-1]),
                 logger=self.logger,
                 metrics_logger=self.metrics
             )

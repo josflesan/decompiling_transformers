@@ -17,6 +17,7 @@ class StageConfig:
     linear_ln: Optional[bool] = False
     lamb: float = 1e-3
     num_steps: int = 1000
+    split_mlps: Optional[bool] = False
 
 @dataclass
 class TaskConfig:
@@ -37,6 +38,7 @@ class PruningRunConfig:
     lr_sampler_for_pruning: float
     lr_ln_var_for_pruning: float
     lr_oa_for_pruning: float
+    lr_mlp_for_pruning: Optional[float] = 0.001
     
     init_sample_param: Optional[float] = None
     baseline_loss: Optional[float] = None
@@ -48,6 +50,11 @@ class PruningRunConfig:
         self.full_output_dir = Path(self.output_dir) / self.exp_name
         if not self.full_output_dir.exists():
             self.full_output_dir.mkdir(parents=True)
+        
+        # Create subfolders
+        for i in range(3):
+            stage_path = self.full_output_dir / f'stage{i + 1}'
+            stage_path.mkdir(exist_ok=True)
             
         # Set up device
         self.torch_device = (

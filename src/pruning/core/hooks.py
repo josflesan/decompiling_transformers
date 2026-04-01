@@ -240,6 +240,7 @@ class GPT2ComponentHooks:
             
         output = module.forward(input_activation)
         self.activations[f"mlp-{layer}"] = output  # dropout included
+        
         return output
 
     def lm_head_hook(
@@ -286,6 +287,7 @@ class GPT2ComponentHooks:
             input_activation = self.ln_f(summed_activation)
             
         output = module.forward(input_activation)
+        
         return output
     
     def remove_hooks(self):
@@ -333,7 +335,7 @@ class GPT2FullPathHooks:
         model,
         config,
         mapping_to_param_idx,
-        split_mlps=True,
+        split_mlp=True,
         logger=None
     ):
         self.model = model
@@ -347,14 +349,13 @@ class GPT2FullPathHooks:
         self.mapping_to_param_idx = mapping_to_param_idx
         self.logger = logger
         self.device = self.model.device
-        self.split_mlps = split_mlps
+        self.split_mlp = split_mlp
         
         self.hooks = []
         self.activations = {}
         self.ln_1 = {}
         self.ln_2 = {}
         self.ln_f = self.model.transformer.ln_f
-        
         
         # Set mask sampler
         self.mask_sampler = None
@@ -370,7 +371,7 @@ class GPT2FullPathHooks:
             self.lm_head_hook
         ))
         
-        for layer in range(self.model.transformer.h):
+        for layer in range(len(self.model.transformer.h)):
             self.ln_1[layer] = self.model.transformer.h[layer].ln_1
             self.ln_2[layer] = self.model.transformer.h[layer].ln_2
             
@@ -390,7 +391,6 @@ class GPT2FullPathHooks:
         
         self.masks = None
         self.oa_vecs = None        
-        
     
     def _linear_layer_norm(
         self,
@@ -458,7 +458,7 @@ class GPT2FullPathHooks:
         else:
             raise NotImplementedError(f"Activation Save Hook not defined for {activation_type}")
     
-    def attn_pre_hook(self, module, input, layer):
+    def attn_pre_hook(self, module, input, output, layer):
         """
         This hook fires before attention weights and outputs are computed. In other words, we receive the input to the
         whole attention block. This hook is tasked with masking each input value and executing multiple forward passes
@@ -478,12 +478,12 @@ class GPT2FullPathHooks:
         # for multiple single-input heads at the same time
         activation_names_to_keep_per_head = [
             [
-                self.config[layer]["v"][head][i]
-                if i < len(self.config[layer]["v"][head])
+                self.full_config[layer]["v"][head][i]
+                if i < len(self.full_config[layer]["v"][head])
                 else None
                 for head in range(self.model.transformer.h[layer].attn.num_heads)
             ]
-            for i in range(max([len(self.config[layer]["v"][head])
+            for i in range(max([len(self.full_config[layer]["v"][head])
                                 for head in range(self.model.transformer.h[layer].attn.num_heads)]))
         ]
         
@@ -527,7 +527,7 @@ class GPT2FullPathHooks:
                 summed_activation = torch.zeros_like(input[0])
                 
                 # Accumulate masked and ablated contributions from each sending vertex of the head
-                for activation_name in self.config[layer][activation][head]:
+                for activation_name in self.full_config[layer][activation][head]:
                     coef = self.masks[:, self.mapping_to_param_idx[(layer, activation, head, activation_name)]]
                     
                     first_term = self.activations[activation_name] * coef.view(-1, 1, 1)
@@ -602,14 +602,14 @@ class GPT2FullPathHooks:
             we are using the split MLPs (since the original MLP will no longer exist)
         """
         
-        if len(self.config[layer]["mlp"]) == 0:
+        if len(self.full_config[layer]["mlp"]) == 0:
             return None
         
-        if not self.split_mlps:
+        if not self.split_mlp:
             # For each MLP receiving vertex, total new activations using ablation vectors
             # where needed
             summed_activation = torch.zeros_like(input[0])
-            for activation_name in self.config[layer]["mlp"]:
+            for activation_name in self.full_config[layer]["mlp"]:
                 coef = self.masks[:, self.mapping_to_param_idx[(layer, "mlp", activation_name)]]
                 
                 first_term = self.activations[activation_name] * coef.view(-1, 1, 1)
@@ -632,12 +632,12 @@ class GPT2FullPathHooks:
         
         else:
             # For each MLP receiving vertex, total masked activations, using OA vecs where needed
-            for activation_name in self.config[layer]["mlp"]:
+            for activation_name in self.full_config[layer]["mlp"]:
                 coef = self.masks[:, self.mapping_to_param_idx[(layer, "mlp", activation_name)]]
                 
                 first_term = self.activations[activation_name] * coef.view(-1, 1, 1)
                 oa = self.oa_vecs.input_vertex_oa[self.oa_vecs.to_in_oa_idx[activation_name]]
-                second_term = oa.unsqueeze(1) * ((1 - coef) * (coef < 0.001).float()).unsqueeze(1) + \
+                second_term = oa.unsqueeze(0) * ((1 - coef) * (coef < 0.001).float()).unsqueeze(1) + \
                     oa.unsqueeze(0).detach() * ((1 - coef) * (coef >= 0.001).float()).unsqueeze(1)
                 summed_activation = first_term + second_term.unsqueeze(1)
                 
@@ -670,7 +670,7 @@ class GPT2FullPathHooks:
         summed_activation = torch.zeros_like(input[0])
         
         # Accumulate input activation from set of all sending vertices
-        for activation_name in self.config["lm_head"]:
+        for activation_name in self.full_config["lm_head"]:
             coef = self.masks[:, self.mapping_to_param_idx[("lm_head", activation_name)]]
             
             first_term = self.activations[activation_name] * coef.view(-1, 1, 1)
@@ -688,6 +688,7 @@ class GPT2FullPathHooks:
         input_activation = self._linear_layer_norm(self.ln_f, summed_activation, ln_var)
         
         output = module.forward(input_activation)
+        
         return output
     
     def remove_hooks(self):

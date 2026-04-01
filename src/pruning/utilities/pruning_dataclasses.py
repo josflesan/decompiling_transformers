@@ -1,7 +1,7 @@
 import torch
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 @dataclass
 class TrainConfig:
@@ -11,13 +11,14 @@ class TrainConfig:
     
 @dataclass
 class StageConfig:
-    name: str
-    batch_size: int
+    train_batch_size: int
+    test_batch_size: int
     num_repeat: int
-    linear_ln: Optional[bool] = False
     lamb: float = 1e-3
     num_steps: int = 1000
-    split_mlps: Optional[bool] = False
+    linear_ln: Optional[bool] = False
+    mini_batch_size: Optional[int] = 0
+    split_mlp: Optional[bool] = False
 
 @dataclass
 class TaskConfig:
@@ -34,7 +35,7 @@ class PruningRunConfig:
     output_dir: str
     model_path: str
     task_config: TaskConfig
-    pruning_stages: List[StageConfig]
+    pruning_stages: Dict[str, StageConfig]
     lr_sampler_for_pruning: float
     lr_ln_var_for_pruning: float
     lr_oa_for_pruning: float

@@ -29,19 +29,15 @@ class CausalPruningPipeline:
         Initialize all pruning stages defined in the config
         """
         
-        for stage_idx, stage_cfg in enumerate(self.config.pruning_stages):
-            stage_name = stage_cfg.name
-            
+        for stage_name in self.config.pruning_stages.keys():
             if stage_name not in STAGE_REGISTRY:
                 raise ValueError(f"Unknown pruning stage: {stage_name}")
         
             stage_class = STAGE_REGISTRY[stage_name]
             
-            #TODO: Issue, this only allows us to run the whole pipeline (all stages).
-            # Would be nice to have a way to run each stage independently for testing and compute reasons
             stage = stage_class(
                 config=self.config,
-                stage_idx=int(stage_name[-1]),
+                stage_name=stage_name,
                 logger=self.logger,
                 metrics_logger=self.metrics
             )

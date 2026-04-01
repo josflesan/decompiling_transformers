@@ -21,11 +21,11 @@ class CausalPruningStage1(PruningStage):
     def __init__(
         self,
         config,
-        stage_idx: int,
+        stage_name: str,
         logger: logging.Logger,
         metrics_logger: MetricsLogger
     ):
-        super().__init__(config, stage_idx, logger, metrics_logger)
+        super().__init__(config, stage_name, logger, metrics_logger)
         
         # -------------- Stage-specific setup --------------
         self.mask_sampler = ComponentMaskSampler(self.model_config).to(self.config.torch_device)

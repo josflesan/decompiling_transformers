@@ -313,7 +313,7 @@ class FullPathsMaskSampler(ComponentMaskSampler):
                     # MLP node from the config and convert to series of paths
                     # to each receiving vertex
                     elif split_mlp and k2 == "mlp":
-                        output_vertex.remover((k1, k2))
+                        output_vertex.remove((k1, k2))
                         for item in config[k1][k2]:
                             mlp_output_vertex.add((k1, k2, item))
         
@@ -357,11 +357,12 @@ class FullPathsMaskSampler(ComponentMaskSampler):
                             reach = [torch.zeros(bz, dtype=torch.bool, device=masks.device)]
                             for input_v in self.config[layer][act][head]:
                                 reach.append(edge_active(self.mapping_to_param_idx[(layer, act, head, input_v)]) & reachable_to_input[input_v])
+                            
                             reach = torch.stack(reach).any(dim=0)
                             reach_qk.append(reach)
                         
                         for input_v in self.config[layer]["v"][head]:
-                            reach = edge_active(self.mapping_to_param_idx[(layer, "v", head, input_v)] & reachable_to_input[input_v])
+                            reach = edge_active(self.mapping_to_param_idx[(layer, "v", head, input_v)]) & reachable_to_input[input_v]
                             attn_reach = reach_qk[0] & reach_qk[1] & reach
                             reachable_to_input[f"attn_output-{layer}-{head}-{input_v}"] = attn_reach
 
@@ -388,7 +389,7 @@ class FullPathsMaskSampler(ComponentMaskSampler):
                 for head in range(num_heads):
                     
                     # Collect reachability to input for each head's sending vertex
-                    dangling_head = [torch.ones(bz, dtype=torch.bool(), device=masks.device)]
+                    dangling_head = [torch.ones(bz, dtype=torch.bool, device=masks.device)]
                     
                     # Consider value inputs and their output nodes first
                     for input_v in self.config[layer]["v"][head]:

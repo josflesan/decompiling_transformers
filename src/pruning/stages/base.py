@@ -27,13 +27,14 @@ class PruningStage(ABC):
     def __init__(
         self,
         config: PruningRunConfig,
-        stage_idx: int,
+        stage_name: str,
         logger: logging.Logger,
         metrics_logger: MetricsLogger
     ): 
         self.config = config
-        self.stage_idx = stage_idx
-        self.stage_config: StageConfig = self.config.pruning_stages[stage_idx]
+        self.stage_name = stage_name  # stageX
+        self.stage_idx = int(stage_name[-1]) - 1
+        self.stage_config: StageConfig = self.config.pruning_stages[stage_name]
         self.logger = logger
         self.metrics_logger = metrics_logger
         
@@ -66,6 +67,14 @@ class PruningStage(ABC):
                 self.output_dict = json.load(f, object_hook=int_key_hook)
                 self.model_config = self.output_dict[f"result_patching_config_global_iteration_{self.stage_idx - 1}"]
     
+    def _get_mps_memory_map(self):
+        """Returns current MPS memory usage in GB."""
+        # current_allocated is the memory currently held by tensors
+        return {
+            "allocated": torch.mps.current_allocated_memory() / 1e9,
+            "driver_allocated": torch.mps.driver_allocated_memory() / 1e9, # Total memory the driver is using
+        }
+    
     def train(
         self,
         oa_param_groups: Dict[str, Any],
@@ -76,7 +85,10 @@ class PruningStage(ABC):
         log_interval = 50
         countdown = self.num_steps
         patience = 3
-        batch_size = self.stage_config.batch_size
+        batch_size = self.stage_config.train_batch_size
+        mini_batch_size = self.stage_config.mini_batch_size
+        accumulation_steps = batch_size // mini_batch_size if mini_batch_size > 0 else 0
+        
         num_repeat = self.stage_config.num_repeat
         unique_input_per_batch = batch_size // num_repeat
         assert unique_input_per_batch * num_repeat == batch_size
@@ -92,6 +104,7 @@ class PruningStage(ABC):
         training_logs = defaultdict(list)
         
         for current_step, batch in enumerate(dataloader):
+            print(f"STEP: {current_step} | mem: {(torch.mps.current_allocated_memory() / 1e9):.2f}GB / {(torch.mps.driver_allocated_memory() / 1e9):.2f}GB")
             
             #TODO: figure out how to save metrics upon failure in refactor
             if self.mask_sampler.sample_params.numel() == 0:
@@ -104,52 +117,113 @@ class PruningStage(ABC):
             batch = {k: v.to(self.config.torch_device).repeat(num_repeat, *([1] * (v.dim() - 1))) for k, v in batch.items()}
             labels = batch.pop("labels")
             
-            with torch.no_grad():
-                target_logits = self.original_model(**batch).logits
-            
-            masks = self.mask_sampler.sample_masks(batch_size)
-            logits = self.hooked_model(
-                masks=masks,
-                oa_vecs=self.oa_vecs,
-                **batch
-            ).logits
-            
-            # Compute task loss and pruning loss
-            task_loss = F.cross_entropy(
-                logits[:, :-1].flatten(end_dim=-1),
-                labels[:, 1:].flatten()
-            ).item()
-            target_logits = target_logits[:, :-1][labels[:, 1:] != -100]
-            logits = logits[:, :-1][labels[:, 1:] != -100]
-            loss = F.kl_div(
-                F.log_softmax(logits, dim=-1), F.log_softmax(target_logits, dim=-1),
-                log_target=True,
-                reduction="mean"
-            )
-            
-            training_logs['kl_div'].append(loss.item())
-            training_logs['task_loss'].append(task_loss)
-            penalty, (reg_edge, reg_node) = self.mask_sampler.get_penalty(gamma)
-            training_logs['reg_node'].append(reg_node)
-            training_logs['reg_edge'].append(reg_edge)
-            
-            loss = loss + self.lamb * penalty
-            
             sampling_opt.zero_grad()
             oa_optimizer.zero_grad()
-            loss.backward()
             
+            # Gradient Accumulation
+            if mini_batch_size != 0:
+                
+                for i in range(0, batch_size, mini_batch_size):
+                    # Slice the current chunk
+                    mini_batch = {k: v[i : i + mini_batch_size] for k, v in batch.items()}
+                    mini_labels = labels[i : i + mini_batch_size]
+                    
+                    # Get target logits
+                    with torch.no_grad():
+                        target_logits = self.original_model(**mini_batch).logits
+                    
+                    masks = self.mask_sampler.sample_masks(mini_batch_size)
+                    logits = self.hooked_model(
+                        masks=masks,
+                        oa_vecs=self.oa_vecs,
+                        **mini_batch
+                    ).logits
+                    
+                    # Compute task loss and pruning loss
+                    task_loss = F.cross_entropy(
+                        logits[:, :-1].flatten(end_dim=1),
+                        mini_labels[:, 1:].flatten()
+                    ).item()
+                    target_logits = target_logits[:, :-1][mini_labels[:, 1:] != -100]
+                    logits = logits[:, :-1][mini_labels[:, 1:] != -100]
+                    loss = F.kl_div(
+                        F.log_softmax(logits, dim=-1), F.log_softmax(target_logits, dim=-1),
+                        log_target=True,
+                        reduction='mean'
+                    ) / accumulation_steps
+                    
+                    training_logs['kl_div'].append(loss.item())
+                    training_logs['task_loss'].append(task_loss)
+                    penalty, (reg_edge, reg_node) = self.mask_sampler.get_penalty(gamma)
+                    training_logs['reg_node'].append(reg_node)
+                    training_logs['reg_edge'].append(reg_edge)
+                    
+                    loss = loss + self.lamb * penalty
+                    loss.backward()
+                    
+                    # 1. Clear the previous activations to free up VRAM
+                    self.hooked_model.activations.clear() 
+                    
+            else:
+                # Get target logits
+                with torch.no_grad():
+                    target_logits = self.original_model(**batch).logits
+                
+                masks = self.mask_sampler.sample_masks(batch_size)
+                logits = self.hooked_model(
+                    masks=masks,
+                    oa_vecs=self.oa_vecs,
+                    **batch
+                ).logits
+                
+                # Compute task loss and pruning loss
+                task_loss = F.cross_entropy(
+                    logits[:, :-1].flatten(end_dim=1),
+                    labels[:, 1:].flatten()
+                ).item()
+                target_logits = target_logits[:, :-1][labels[:, 1:] != -100]
+                logits = logits[:, :-1][labels[:, 1:] != -100]
+                loss = F.kl_div(
+                    F.log_softmax(logits, dim=-1), F.log_softmax(target_logits, dim=-1),
+                    log_target=True,
+                    reduction="mean"
+                )
+                
+                training_logs['kl_div'].append(loss.item())
+                training_logs['task_loss'].append(task_loss)
+                penalty, (reg_edge, reg_node) = self.mask_sampler.get_penalty(gamma)
+                training_logs['reg_node'].append(reg_node)
+                training_logs['reg_edge'].append(reg_edge)
+                
+                loss = loss + self.lamb * penalty
+                loss.backward()
+                
+                # 1. Clear the previous activations to free up VRAM
+                self.hooked_model.activations.clear() 
+
+            if self.config.device == 'mps':
+                # 2. Release the actual GPU memory (Releases Metal handles)
+                # This tells the MPS driver to reclaim memory from deleted tensors.
+                torch.mps.empty_cache()
+
+                # 3. Synchronize (Optional but recommended for profiling)
+                # This ensures the GPU has actually finished the "empty_cache" 
+                # command before you check the memory stats for the next loop.
+                torch.mps.synchronize()
+                    
             # Clip gradient norms and take step
             oa_grad_norm = torch.nn.utils.clip_grad_norm_(self.oa_vecs.parameters(), max_norm=float('inf')).item()
             sampler_grad_norm = torch.nn.utils.clip_grad_norm_(self.mask_sampler.parameters(), max_norm=float('inf')).item()
             training_logs['oa_grad_norm'].append(oa_grad_norm)
             training_logs['sampler_grad_norm'].append(sampler_grad_norm)
             torch.nn.utils.clip_grad_norm_(self.mask_sampler.parameters(), 5)
+            
+            # Take optimizer steps
             sampling_opt.step()
             oa_optimizer.step()
             
             # Log warning if any mask parameters are NaN
-            nan_count = sum(p.isnan().sum.item() for p in self.mask_sampler.parameters())
+            nan_count = sum(p.isnan().sum().item() for p in self.mask_sampler.parameters())
             if nan_count > 0:
                 self.logger.warning(f"sum NaN: {nan_count}")
             
@@ -170,6 +244,8 @@ class PruningStage(ABC):
             
             # Logging
             if (current_step + 1) % log_interval == 0:
+                mem_current = self._get_mps_memory_map() if self.config.device == 'mps' else {}
+                self.logger.info(f"STEP {current_step} | Mem: {mem_current['allocated']:.2f}GB / Reserved: {mem_current['driver_allocated']:.2f}GB")
                 self.logger.info({k: sum(v) / len(v) for k, v in training_logs.items()})
                 
                 if all_sample_p.max().item() < -2:
@@ -188,6 +264,8 @@ class PruningStage(ABC):
                 if ((all_sample_p > -1) & (all_sample_p < 1)).sum().item():
                     countdown = self.num_steps + 1
                 
+                print(f"COUNTDOWN STEPS LEFT: {countdown}")
+                
                 training_logs = defaultdict(list)
             
             # Early Stopping
@@ -205,7 +283,7 @@ class PruningStage(ABC):
         num_match = 0
         task_loss = 0
         kl_div = 0
-        batch_size = self.config.pruning_stages[self.stage_idx].batch_size
+        batch_size = self.stage_config.test_batch_size
         dataloader = DataLoader(self.train_dataset, batch_size=batch_size, shuffle=False, collate_fn=self.collator)
         loss_func = torch.nn.CrossEntropyLoss()
         

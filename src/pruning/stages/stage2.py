@@ -21,38 +21,39 @@ class CausalPruningStage2(PruningStage):
     def __init__(
         self,
         config,
-        stage_idx: int,
+        stage_name: str,
         logger: logging.Logger,
         metrics_logger: MetricsLogger
     ):
-        super().__init__(config, stage_idx, logger, metrics_logger)
+        super().__init__(config, stage_name, logger, metrics_logger)
         
         # ------------------ Stage-specific setup -------------------        
-        self.mask_sampler = FullPathsMaskSampler(self.model_config).to(self.config.torch_device)
-        if self.config.init_sample_param:
-            self.mask_sampler.sample_params.data *= self.config.init_sample_param
-
+        
         # acc_match = output_dict["acc_match"]
         # acc_task = output_dict["acc_task"]
         # kl_div = output_dict["kl_div"]
         # task_loss = output_dict["task_loss"]
         
         # Load config depending on whether we split MLPs or not
-        self.model_config = self._convert_config_fullpaths_(self.model_config, self.num_heads_per_layer, split_mlps=self.stage_config.split_mlps)
+        self.model_config = self._convert_config_fullpaths_(self.model_config, self.num_heads_per_layer, split_mlp=self.stage_config.split_mlp)
         self.logger.info(f"After conversion to full paths: {self.model_config}")
+        
+        self.mask_sampler = FullPathsMaskSampler(self.model_config, split_mlp=self.stage_config.split_mlp).to(self.config.torch_device)
+        if self.config.init_sample_param:
+            self.mask_sampler.sample_params.data *= self.config.init_sample_param
         
         self.hooked_model = GPT2FullPathHooks(
             model=self.model,
             config=self.model_config,
             mapping_to_param_idx=self.mask_sampler.mapping_to_param_idx,
-            split_mlps=self.config.split_mlps,
+            split_mlp=self.stage_config.split_mlp,
             logger=self.logger
         )
         self.logger.info(f"Mask Param Names: {[n for n, p in self.mask_sampler.named_parameters()]}")
         self.logger.info(f"Total Edge Count: {sum(p.numel() for p in self.mask_sampler.parameters())}")
         
         # Recover lambdas from LN linearization
-        converted_ln_var = torch.zeros(len(self.mask_sampler.output_vertex))
+        converted_ln_var = torch.zeros(len(self.mask_sampler.all_output_vertex))
         for i, output_v in enumerate(self.mask_sampler.all_output_vertex):
             match output_v:
                 case (layer, v, head, inp_v):
@@ -80,7 +81,7 @@ class CausalPruningStage2(PruningStage):
         self,
         model_config: Dict[Any, Any],
         num_heads_per_layer: List[int],
-        split_mlps: bool = True
+        split_mlp: bool = True
     ):
         """
         Utility transformation to convert model config dictionary into full-path config
@@ -89,11 +90,10 @@ class CausalPruningStage2(PruningStage):
         Args:
             model_config (Dict[Any, Any]): original model configuration dictionary
             num_heads_per_layer (List[int]): number of attention heads in each layer
-            split_mlps (bool, optional): whether or not to linearly decompose MLPs. Defaults to True.
+            split_mlp (bool, optional): whether or not to linearly decompose MLPs. Defaults to True.
         """
         
         num_layers = len(num_heads_per_layer)
-        new_config = deepcopy(model_config)
         
         for layer in range(num_layers):
             for head in range(num_heads_per_layer[layer]):
@@ -103,7 +103,7 @@ class CausalPruningStage2(PruningStage):
                     mlp_dependencies = (
                         [f"mlp-{l}"
                             for l in range(layer)
-                        if f"mlp-{l}" in model_config[layer][attn_act][head]] if not split_mlps else
+                        if f"mlp-{l}" in model_config[layer][attn_act][head]] if not split_mlp else
                         
                         [f"mlp-{l}-{prev_path}"
                             for l in range(layer)
@@ -112,7 +112,7 @@ class CausalPruningStage2(PruningStage):
                     )
                     
                     # Update attention head dependencies
-                    new_config[layer][attn_act][head] = [
+                    model_config[layer][attn_act][head] = [
                         act for act in ["wte", "wpe"] if act in model_config[layer][attn_act][head]
                     ] + \
                     [f"attn_output-{l}-{h}-{prev_path}"
@@ -126,14 +126,14 @@ class CausalPruningStage2(PruningStage):
             mlp_dependencies = (
                 [f"mlp-{l}"
                     for l in range(layer)
-                if f"mlp-{l}" in model_config[layer]["mlp"]] if not split_mlps else
+                if f"mlp-{l}" in model_config[layer]["mlp"]] if not split_mlp else
                 
                 [f"mlp-{l}-{prev_path}"
                     for l in range(layer)
                     for prev_path in model_config[l]["mlp"]
                 if f"mlp-{l}" in model_config[layer]["mlp"]]
             )
-            new_config[layer]["mlp"] = [
+            model_config[layer]["mlp"] = [
                 act for act in ["wte", "wpe"] if act in model_config[layer]["mlp"]
             ] + \
             [f"attn_output-{l}-{h}-{prev_path}"
@@ -147,14 +147,14 @@ class CausalPruningStage2(PruningStage):
         mlp_dependencies = (
             [f"mlp-{l}"
                 for l in range(num_layers)
-            if f"mlp-{l}" in model_config["lm_head"]] if not split_mlps else
+            if f"mlp-{l}" in model_config["lm_head"]] if not split_mlp else
             
             [f"mlp-{l}-{prev_path}"
                 for l in range(num_layers)
                 for prev_path in model_config[l]["mlp"]
             if f"mlp-{l}" in model_config["lm_head"]]
         )
-        new_config["lm_head"] = [
+        model_config["lm_head"] = [
             act for act in ["wte", "wpe"] if act in model_config["lm_head"]
         ] + \
         [f"attn_output-{l}-{h}-{prev_path}"
@@ -164,7 +164,12 @@ class CausalPruningStage2(PruningStage):
         if f"attn_output-{l}-{h}" in model_config["lm_head"]] + \
         mlp_dependencies
         
-        return new_config
+        # Write the resulting model_config to output directory
+        output_file = self.config.full_output_dir / f'stage{self.stage_idx + 1}' / 'transformed.json'
+        with open(output_file, 'w') as f:
+            json.dump(model_config, f, indent=4)
+        
+        return model_config
 
     def _pretrain_oa_vecs(self):
         self.logger.info("PRETRAINING OPTIMAL ABLATION VECTORS FOR OUTPUT NODE")
@@ -179,7 +184,7 @@ class CausalPruningStage2(PruningStage):
             {"params": [self.oa_vecs.output_vertex_oa], "lr": self.config.lr_oa_for_pruning}
         ]
         
-        if self.stage_config.split_mlps:
+        if self.stage_config.split_mlp:
             param_groups.append({"params": self.oa_vecs.mlps.parameters(), "lr": self.config.lr_mlp_for_pruning})
         
         oa_optimizer = torch.optim.AdamW(param_groups, weight_decay=0)
@@ -188,6 +193,7 @@ class CausalPruningStage2(PruningStage):
 
         # Pretraining loop
         for current_step, batch in enumerate(dataloader):
+            print(f"STEP: {current_step} | mem: {(torch.mps.current_allocated_memory() / 1e9):.2f}GB / {(torch.mps.driver_allocated_memory() / 1e9):.2f}GB")
             batch = {k: v.to(self.config.torch_device) for k, v in batch.items()}
             labels = batch.pop("labels")
             
@@ -218,6 +224,19 @@ class CausalPruningStage2(PruningStage):
             oa_optimizer.zero_grad()
             loss.backward()
             oa_optimizer.step()
+            
+            # 1. Clear the previous activations to free up VRAM
+            self.hooked_model.activations.clear() 
+
+            if self.config.device == 'mps':
+                # 2. Release the actual GPU memory (Releases Metal handles)
+                # This tells the MPS driver to reclaim memory from deleted tensors.
+                torch.mps.empty_cache()
+
+                # 3. Synchronize (Optional but recommended for profiling)
+                # This ensures the GPU has actually finished the "empty_cache" 
+                # command before you check the memory stats for the next loop.
+                torch.mps.synchronize()
             
             self.metrics_logger.log(
                 stage=f"Stage {self.stage_idx + 1} (Pretrain)",
@@ -299,7 +318,7 @@ class CausalPruningStage2(PruningStage):
             {"params": [self.oa_vecs.output_vertex_oa], "lr": 1e-4},
         ]
         
-        if self.stage_config.split_mlps:
+        if self.stage_config.split_mlp:
             param_groups.append({"params": self.oa_vecs.mlps.parameters(), "lr": self.config.lr_mlp_for_pruning})
 
         self.logger.info(f"1. Pruning Stage {self.stage_idx + 1} training...")

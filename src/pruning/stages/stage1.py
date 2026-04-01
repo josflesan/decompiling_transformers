@@ -28,12 +28,13 @@ class CausalPruningStage1(PruningStage):
         super().__init__(config, stage_name, logger, metrics_logger)
         
         # -------------- Stage-specific setup --------------
-        self.mask_sampler = ComponentMaskSampler(self.model_config).to(self.config.torch_device)
-        if self.config.init_sample_param:
-            self.mask_sampler.sample_params.data *= self.config.init_sample_param
         
         # If first stage, convert model config to dependency graph
         self.model_config = self._get_full_possible_config_for_pruning(self.num_heads_per_layer)
+        self.mask_sampler = ComponentMaskSampler(self.model_config).to(self.config.torch_device)
+        if self.config.init_sample_param:
+            self.mask_sampler.sample_params.data *= self.config.init_sample_param
+            
         self.linear_LN = self.stage_config.linear_ln
         self.hooked_model = GPT2ComponentHooks(
             self.model,

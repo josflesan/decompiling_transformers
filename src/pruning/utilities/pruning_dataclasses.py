@@ -1,7 +1,7 @@
 import torch
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 @dataclass
 class TrainConfig:
@@ -11,12 +11,14 @@ class TrainConfig:
     
 @dataclass
 class StageConfig:
-    name: str
-    batch_size: int
+    train_batch_size: int
+    test_batch_size: int
     num_repeat: int
-    linear_ln: Optional[bool] = False
     lamb: float = 1e-3
     num_steps: int = 1000
+    linear_ln: Optional[bool] = False
+    mini_batch_size: Optional[int] = 0
+    split_mlp: Optional[bool] = False
 
 @dataclass
 class TaskConfig:
@@ -33,10 +35,11 @@ class PruningRunConfig:
     output_dir: str
     model_path: str
     task_config: TaskConfig
-    pruning_stages: List[StageConfig]
+    pruning_stages: Dict[str, StageConfig]
     lr_sampler_for_pruning: float
     lr_ln_var_for_pruning: float
     lr_oa_for_pruning: float
+    lr_mlp_for_pruning: Optional[float] = 0.001
     
     init_sample_param: Optional[float] = None
     baseline_loss: Optional[float] = None
@@ -48,6 +51,11 @@ class PruningRunConfig:
         self.full_output_dir = Path(self.output_dir) / self.exp_name
         if not self.full_output_dir.exists():
             self.full_output_dir.mkdir(parents=True)
+        
+        # Create subfolders
+        for i in range(3):
+            stage_path = self.full_output_dir / f'stage{i + 1}'
+            stage_path.mkdir(exist_ok=True)
             
         # Set up device
         self.torch_device = (

@@ -10,7 +10,8 @@ dependencies = [
     "matplotlib>=3.10.8",
     "numpy==1.26.4",
     "streamlit>=1.54.0",
-    "torch>=2.1.0",
+    "streamlit-autorefresh>=1.0.1",
+    "torch==2.11.0",
     "transformer-lens>=1.10.0",
     "transformers==4.45.1",
 ]

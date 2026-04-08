@@ -22,9 +22,9 @@ def load_config(config_path: str) -> None:
         raw = yaml.safe_load(f)
         
     # Convert stage_config dicts into StageConfig objects
-    raw['pruning_stages'] = [
-        StageConfig(**raw['pruning_stages'][idx]) for idx in range(len(raw['pruning_stages']))
-    ]
+    raw['pruning_stages'] = {
+        key: StageConfig(**value) for key, value in raw['pruning_stages'].items()
+    }
     
     # Convert task_config dict into TaskConfig
     raw['task_config'] = TaskConfig(**raw['task_config'])
@@ -54,7 +54,10 @@ def output_model_arch_json(
         
     with open(out_dir / "model_config.json", "w") as f:
         json.dump(layer_configs, f, indent=4)
-        
+
+def int_key_hook(d):
+    return {int(k) if k.isdigit() else k: v for k, v in d.items()}
+
 def get_full_possible_config_for_pruning(num_heads_per_layer: List[int]) -> Dict[str, List[Any]]:
     """
     This function builds a dependency map for pruning, as defined by the authors in Appendix F. In other words,

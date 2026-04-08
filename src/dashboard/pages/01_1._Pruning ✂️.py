@@ -91,15 +91,16 @@ def render_stage(stage: str, pretrain: bool=False):
     
     st.header(stage)
     
+    # print(f"Current Max Step: {train_s['current_maxstep'].iloc[-1]}")
+    
     # Progress bar
     if "step" in stage_df.columns:
         current_step = stage_df["step"].max()
         #TODO: delete this
-        max_step = 5000 if 'current_maxstep' not in stage_df.columns else stage_df['current_maxstep']
-        st.progress(min(current_step / max_step, 1.0))
+        st.progress(min(current_step / train_s['current_maxstep'].iloc[-1], 1.0))
     
-    if current_step == max_step:
-        st.success(f"{stage} Complete! | Time Elapsed: {(stage_df['timestamp'].max() - stage_df['timestamp'].min()) / 60.0} mins.")
+    if current_step == stage_df['current_maxstep'].iloc[-1]:
+        st.success(f"{stage} Complete! | Time Elapsed: {(train_s['timestamp'].max() - train_s['timestamp'].min()) / 60.0} mins.")
     
     cols = st.columns(3)
     

@@ -34,14 +34,7 @@ class CausalPruningPipeline:
                 raise ValueError(f"Unknown pruning stage: {stage_name}")
         
             stage_class = STAGE_REGISTRY[stage_name]
-            
-            stage = stage_class(
-                config=self.config,
-                stage_name=stage_name,
-                logger=self.logger,
-                metrics_logger=self.metrics
-            )
-            self.stages.append(stage)
+            self.stages.append((stage_name, stage_class))
 
         if len(self.stages) == 0:
             raise ValueError("No pruning stages enabled in config.")
@@ -53,10 +46,17 @@ class CausalPruningPipeline:
         Runs the entire pruning pipeline.
         """
         
-        for stage_idx, stage in enumerate(self.stages):
+        for stage_idx, (stage_name, stage_class) in enumerate(self.stages):
             self.logger.info("=" * 60)
-            self.logger.info(f"Running Stage {stage_idx + 1}: {stage.__class__.__name__}")
+            self.logger.info(f"Running Stage {stage_idx + 1}: {stage_name}")
             self.logger.info("=" * 59 + "=\n")
+            
+            stage = stage_class(
+                config=self.config,
+                stage_name=stage_name,
+                logger=self.logger,
+                metrics_logger=self.metrics
+            )
             
             stage.run()
         

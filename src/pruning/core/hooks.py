@@ -376,7 +376,7 @@ class GPT2FullPathHooks:
             self.ln_2[layer] = self.model.transformer.h[layer].ln_2
             
             # Pre-attention hook, c_attn hook, c_proj hook and mlp_hook
-            self.hooks.append(self.model.transformer.h[layer].attn.register_forward_hook(partial(
+            self.hooks.append(self.model.transformer.h[layer].attn.register_forward_pre_hook(partial(
                 self.attn_pre_hook, layer=layer
             ), with_kwargs=False))
             self.hooks.append(self.model.transformer.h[layer].attn.c_attn.register_forward_hook(partial(
@@ -450,6 +450,8 @@ class GPT2FullPathHooks:
             attention_by_head_output = attention_by_head.transpose(0, 1) @ module.weight.view(num_heads, head_dim, d_model)  # (num_head, bz*seq_len, d_model)
             attention_by_head_output = attention_by_head_output.view(num_heads, bz, seq_len, d_model).unbind(dim=0)  # (num_heads, bz, seq_len, d_model)
             
+            assert (((sum(attention_by_head_output) + module.bias) - output).abs() < 1e-3).all(), ((sum(attention_by_head_output) + module.bias) - output)
+            
             # Distribute the final attention_by_head_output across the different value input-dependent paths
             for head, attn in enumerate(attention_by_head_output):
                 if self.activation_name_to_keep[head] is not None:
@@ -458,7 +460,7 @@ class GPT2FullPathHooks:
         else:
             raise NotImplementedError(f"Activation Save Hook not defined for {activation_type}")
     
-    def attn_pre_hook(self, module, input, output, layer):
+    def attn_pre_hook(self, module, input, layer):
         """
         This hook fires before attention weights and outputs are computed. In other words, we receive the input to the
         whole attention block. This hook is tasked with masking each input value and executing multiple forward passes

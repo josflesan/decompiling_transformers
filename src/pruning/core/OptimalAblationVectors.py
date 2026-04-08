@@ -36,7 +36,7 @@ class OptimalAblationVectors(nn.Module):
         self.ln_var = nn.Parameter(init_var)
         self.to_ln_idx = {item: i for i, item in enumerate(ln_vertex)}
         
-        # MLP Vertex corresponds to... TODO
+        # MLP Vertex corresponds to the single-dependency MLPs enabled by the split_mlp flag in stage 2 pruning
         self.mlp_vertex = mlp_vertex
         if mlp_vertex is not None and len(mlp_vertex) > 0:
             inner_dim = model_config.n_inner if model_config.n_inner is not None else 4 * model_config.hidden_size

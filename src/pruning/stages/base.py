@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 import torch
 import torch.nn.functional as F
 
@@ -109,7 +110,7 @@ class PruningStage(ABC):
             #TODO: figure out how to save metrics upon failure in refactor
             if self.mask_sampler.sample_params.numel() == 0:
                 self.hooked_model.remove_hooks()
-                self.output_dict['result_patching_config_global_iteration_1'] = deepcopy(self.model_config)
+                self.output_dict[f'result_patching_config_global_iteration_{self.stage_idx}'] = deepcopy(self.model_config)
                 self.logger.info("Nothing to prune, exiting...")
                 break
             
@@ -150,7 +151,7 @@ class PruningStage(ABC):
                         F.log_softmax(logits, dim=-1), F.log_softmax(target_logits, dim=-1),
                         log_target=True,
                         reduction='mean'
-                    ) / accumulation_steps
+                    )
                     
                     training_logs['kl_div'].append(loss.item())
                     training_logs['task_loss'].append(task_loss)
@@ -158,7 +159,7 @@ class PruningStage(ABC):
                     training_logs['reg_node'].append(reg_node)
                     training_logs['reg_edge'].append(reg_edge)
                     
-                    loss = loss + self.lamb * penalty
+                    loss = (loss + self.lamb * penalty) / accumulation_steps
                     loss.backward()
                     
                     # 1. Clear the previous activations to free up VRAM
@@ -230,7 +231,9 @@ class PruningStage(ABC):
             all_sample_p = torch.cat([p.data.detach().view(-1) for p in self.mask_sampler.parameters()], dim=0)
             self.metrics_logger.log(
                 stage=f"Stage {self.stage_idx + 1}",
+                timestamp=time.time(),
                 step=current_step,
+                current_maxstep=min(current_step + countdown, 5000),
                 split="train",
                 kl_div=loss.item(),
                 task_loss=task_loss,
@@ -302,7 +305,11 @@ class PruningStage(ABC):
                 target_logits = self.original_model(**batch).logits
                 
                 masks = self.mask_sampler.sample_binary_masks(current_bz)
-                logits = self.hooked_model(masks=masks, oa_vecs=self.oa_vecs, **batch).logits
+                logits = self.hooked_model(
+                    masks=masks,
+                    oa_vecs=self.oa_vecs,
+                    **batch
+                ).logits
                 
                 shift_target_logits = target_logits[:, :-1]
                 shift_logits = logits[:, :-1]
@@ -346,7 +353,7 @@ class PruningStage(ABC):
         self.logger.info(f"After Pruning Edge Count: {num_edges}")
         
         # Prepare output dictionary
-        self.output_dict[f"result_patching_performance_global_iteration_0"] = {
+        self.output_dict[f"result_patching_performance_global_iteration_{self.stage_idx}"] = {
             "acc_match": acc_match,
             "acc_task": acc_task,
             "task_loss": task_loss,
@@ -374,6 +381,7 @@ class PruningStage(ABC):
         model_dir = self.config.full_output_dir / f'stage{self.stage_idx + 1}' / 'pruned_model'
         model_dir.mkdir(exist_ok=True)
         
+        #TODO: this is wrong, we should be saving the pruned model not the original one!!
         self.model.save_pretrained(model_dir)
     
     @abstractmethod

@@ -63,13 +63,13 @@ class CausalPruningStage1(PruningStage):
                 match output_v:
                     # LN1
                     case (layer, act, head):
-                        converted_ln_var[i] = ln_var[layer * 2].item()
+                        converted_ln_var[i] = ln_var[layer * 2]
                     # LN2
                     case (layer, "mlp"):
-                        converted_ln_var[i] = ln_var[layer * 2 + 1].item()
+                        converted_ln_var[i] = ln_var[layer * 2 + 1]
                     # LNF
                     case ("lm_head",):
-                        converted_ln_var[i] = ln_var[-1].item()
+                        converted_ln_var[i] = ln_var[-1]
             
             # Log the variance tensor
             converted_ln_var = converted_ln_var.log()

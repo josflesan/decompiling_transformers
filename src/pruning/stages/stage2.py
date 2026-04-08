@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 import torch
 import torch.nn.functional as F
 from collections import defaultdict
@@ -62,7 +63,7 @@ class CausalPruningStage2(PruningStage):
                     converted_ln_var[i] = self.oa_vecs.ln_var[self.oa_vecs.to_ln_idx[(layer, "mlp")]].item()
                 case _:
                     converted_ln_var[i] = self.oa_vecs.ln_var[self.oa_vecs.to_ln_idx[output_v]].item()
-    
+        
         # Initialize OA Vectors
         self.oa_vecs = OptimalAblationVectors(
             input_vertex=self.mask_sampler.input_vertex,
@@ -174,8 +175,10 @@ class CausalPruningStage2(PruningStage):
     def _pretrain_oa_vecs(self):
         self.logger.info("PRETRAINING OPTIMAL ABLATION VECTORS FOR OUTPUT NODE")
         num_pretrain_steps = 500
-        batch_size = 64
         log_interval = 50
+        batch_size = 64
+        mini_batch_size = 16  #TODO: maybe we want to add a config key for this
+        accumulation_steps = batch_size // mini_batch_size if mini_batch_size > 0 else 0
         
         # Disable gradients, define optimizers and dataloader
         self.oa_vecs.input_vertex_oa.requires_grad_(False)
@@ -197,33 +200,70 @@ class CausalPruningStage2(PruningStage):
             batch = {k: v.to(self.config.torch_device) for k, v in batch.items()}
             labels = batch.pop("labels")
             
-            # Get target logits, masks and current logits
-            with torch.no_grad():
-                target_logits = self.original_model(**batch).logits
-            masks = self.mask_sampler.sample_binary_masks(batch_size)
-            logits = self.hooked_model(
-                masks=masks,
-                oa_vecs=self.oa_vecs,
-                **batch
-            ).logits
-            
-            # Compute KL divergence loss
-            task_loss = F.cross_entropy(logits[:, :-1].flatten(end_dim=1), labels[:, 1:].flatten()).item()
-            target_logits = target_logits[:, :-1][labels[:, 1:] != -100]
-            logits = logits[:, :-1][labels[:, 1:] != -100]
-            loss = F.kl_div(
-                F.log_softmax(logits, dim=-1), F.log_softmax(target_logits, dim=-1),
-                log_target=True,
-                reduction='mean'
-            )
-            
-            # Log, compute gradients and take step
-            training_logs["kl_div"].append(loss.item())
-            training_logs["task_loss"].append(task_loss)
-            
             oa_optimizer.zero_grad()
-            loss.backward()
-            oa_optimizer.step()
+            
+            # Gradient Accumulation
+            if mini_batch_size != 0:
+                
+                for i in range(0, batch_size, mini_batch_size):
+                    # Slice the current chunk
+                    mini_batch = {k: v[i : i + mini_batch_size] for k, v in batch.items()}
+                    mini_labels = labels[i : i + mini_batch_size]
+                    
+                    # Get target logits
+                    with torch.no_grad():
+                        target_logits = self.original_model(**mini_batch).logits
+                    
+                    masks = self.mask_sampler.sample_binary_masks(mini_batch_size)
+                    logits = self.hooked_model(
+                        masks=masks,
+                        oa_vecs=self.oa_vecs,
+                        **mini_batch
+                    ).logits
+                    
+                    # Compute task loss and KL divergence loss
+                    task_loss = F.cross_entropy(logits[:, :-1].flatten(end_dim=1), mini_labels[:, 1:].flatten()).item()
+                    target_logits = target_logits[:, :-1][mini_labels[:, 1:] != -100]
+                    logits = logits[:, :-1][mini_labels[:, 1:] != -100]
+                    loss = F.kl_div(
+                        F.log_softmax(logits, dim=-1), F.log_softmax(target_logits, dim=-1),
+                        log_target=True
+                    )
+                    
+                    # Log, compute gradients and take step
+                    training_logs["kl_div"].append(loss.item())
+                    training_logs["task_loss"].append(task_loss)
+                    
+                    loss /= accumulation_steps
+                    loss.backward()
+                
+            else:
+                
+                # Get target logits, masks and current logits
+                with torch.no_grad():
+                    target_logits = self.original_model(**batch).logits
+
+                masks = self.mask_sampler.sample_binary_masks(batch_size)
+                logits = self.hooked_model(
+                    masks=masks,
+                    oa_vecs=self.oa_vecs,
+                    **batch
+                ).logits
+                
+                # Compute KL divergence loss
+                task_loss = F.cross_entropy(logits[:, :-1].flatten(end_dim=1), labels[:, 1:].flatten()).item()
+                target_logits = target_logits[:, :-1][labels[:, 1:] != -100]
+                logits = logits[:, :-1][labels[:, 1:] != -100]
+                loss = F.kl_div(
+                    F.log_softmax(logits, dim=-1), F.log_softmax(target_logits, dim=-1),
+                    log_target=True
+                )
+                
+                # Log, compute gradients and take step
+                training_logs["kl_div"].append(loss.item())
+                training_logs["task_loss"].append(task_loss)
+                
+                loss.backward()
             
             # 1. Clear the previous activations to free up VRAM
             self.hooked_model.activations.clear() 
@@ -238,9 +278,13 @@ class CausalPruningStage2(PruningStage):
                 # command before you check the memory stats for the next loop.
                 torch.mps.synchronize()
             
+            oa_optimizer.step()
+            
             self.metrics_logger.log(
                 stage=f"Stage {self.stage_idx + 1} (Pretrain)",
+                timestamp=time.time(),
                 step=current_step,
+                current_maxstep=num_pretrain_steps,
                 split="train",
                 kl_div=loss.item(),
                 task_loss=task_loss,

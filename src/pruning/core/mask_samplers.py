@@ -499,3 +499,46 @@ class FullPathsMaskSampler(ComponentMaskSampler):
                 zero_edge(self.mapping_to_param_idx[("lm_head", input_v)], dangling)
             
         return masks
+
+class QKMaskSampler(ComponentMaskSampler):
+    """Query-Key Mask Sampler for Pruning Stage 3"""
+    
+    def __init__(self, config):
+        nn.Module.__init__(self)
+        
+        param_idx = 0
+        mapping_to_param_idx = {}
+        key_names = set()
+        
+        # Get all query-key (binary) and key (unary) vertices
+        for k1 in config:
+            if type(config[k1]) == dict:
+                for k2 in config[k1]:
+                    if k2 == "qk" or k2 == "k":
+                        
+                        # For each input-dependency of this vertex
+                        for k3 in config[k1][k2]:
+                            for item in config[k1][k2][k3]:
+                                mapping_to_param_idx[(k1, k3, item)] = param_idx
+                                param_idx += 1
+                                
+                                # Save the key name if needed
+                                if k2 == "k":
+                                    key_names.add((k1, k3, item))
+        
+        self.key_names = list(key_names)
+        self.config = config
+        self.mapping_to_param_idx = mapping_to_param_idx
+        self.sample_params = nn.Parameter(torch.ones(param_idx))
+        
+        num_head_per_layer = []
+        for i in range(len(config) - 1):
+            num_head_per_layer.append(len(config[i]["k"]))    
+        self.num_head_per_layer = num_head_per_layer
+
+        self.window_function = lambda x: x * (1 - x)
+    
+    def prune_dangling_edges(self, masks):
+        # No need to prune because every remaining edge is essential
+        # In stage 3 we only prune the internal weights of the selector so we don't delete destination nodes
+        return masks

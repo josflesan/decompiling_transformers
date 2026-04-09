@@ -4,11 +4,12 @@ from pruning.utilities.logger import setup_logger
 from pruning.utilities.metrics_logger import MetricsLogger
 from pruning.stages.stage1 import CausalPruningStage1
 from pruning.stages.stage2 import CausalPruningStage2
-# from pruning.stages.stage3 import CausalPruningStage3
+from pruning.stages.stage3 import CausalPruningStage3
 
 STAGE_REGISTRY = {
     "stage1": CausalPruningStage1,
-    "stage2": CausalPruningStage2 
+    "stage2": CausalPruningStage2,
+    "stage3": CausalPruningStage3
 }
 
 class CausalPruningPipeline:

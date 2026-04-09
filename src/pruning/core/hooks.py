@@ -720,3 +720,312 @@ class GPT2FullPathHooks:
             self.masks = self.mask_sampler.sample_binary_masks(bz)
         
         return self.model(*args, **kwargs)
+
+
+class GPT2QKHooks:
+    """
+    The goal of these hooks is to prune individual products from the reparameterized attention logit computation. In regular
+    attention, logits are computed as a product of sums. In other words...
+    
+    AttnLogit = (Etoken + Ppos)^T Q^T K (Etoken + Ppos)
+    
+    where we use the example of an attention head with inputs Etoken and Ppos. In this stage, we rewrite
+    this equivalently as a sum of products such that
+    
+    AttnLogit = (token^T E^T Q^T K Etoken) + (token^T E^T Q^T K Ppos) + (pos^T P^T Q^T K Etoken) + (pos^T P^T Q^T K P pos)
+    
+    This lets us understand the set of possible interactions as a product of
+    
+    prod = inputA X inputB
+    
+    Where the matrix X relates inputA and inputB accordingly. This matrix can then be further analyzed to enable primitive replacement
+    and discover fundamental behaviours implemented by the attention head in the interaction. For example, a possible interaction
+    could be an identity operation. Note that is also possible for us to ablate a query, leaving a key-only/unary term.
+    
+    The goal of these hooks is then to remove any interactions that are not necessary for the global computation/behaviour of the model
+    such that we can arrive at a set of minimal selectors that define the program encoded by the model.
+    """
+    
+    def __init__(
+        self,
+        model,
+        config,
+        mapping_to_param_idx,
+        split_mlp=True,
+        logger=None
+    ):
+        self.model = model
+        self.model.eval()
+        for p in self.model.parameters():
+            p.requires_grad_(False)
+        
+        self.config = deepcopy(config)
+        self.mapping_to_param_idx = mapping_to_param_idx
+        self.split_mlp = split_mlp
+        self.logger = logger
+        self.device = self.model.device
+        
+        self.hooks = []
+        self.activations = {}
+        self.ln_1 = {}
+        self.ln_2 = {}
+        self.ln_f = self.model.transformer.ln_f
+        
+        # Attach hooks
+        self.hooks.append(self.model.transformer.wte.register_forward_hook(partial(
+            self.save_activation_hook, activation_type="wte", layer=None
+        )))
+        self.hooks.append(self.model.transformer.wpe.register_forward_hook(partial(
+            self.save_activation_hook, activation_type="wpe", layer=None
+        )))
+        self.hooks.append(self.model.lm_head.register_forward_hook(
+            self.lm_head_hook
+        ))
+
+        for layer in range(len(self.model.transformer.h)):
+            self.ln_1[layer] = self.model.transformer.h[layer].ln_1
+            self.ln_2[layer] = self.model.transformer.h[layer].ln_2
+            
+            self.hooks.append(self.model.transformer.h[layer].attn.register_forward_pre_hook(partial(
+                self.attn_pre_hook, layer=layer
+            ), with_kwargs=False))
+            self.hooks.append(self.model.transformer.h[layer].mlp.register_forward_hook(partial(
+                self.mlp_hook, layer=layer
+            )))
+        
+        self.masks = None
+        self.oa_vecs = None
+    
+    def set_converted_mlp(self, converted_mlp: dict):
+        self.logger.info("Setting converted MLP, should be done with training")
+        self.converted_mlp = converted_mlp
+        self.variables = {}
+    
+    def remove_converted_mlp(self):
+        del self.converted_mlp
+        del self.variables
+        
+    def _linear_layer_norm(self, module: nn.LayerNorm, input, scalar, bias=False):
+        out = (input - input.mean(dim=-1, keepdim=True)) / (scalar + module.eps).sqrt() * module.weight.view(1, 1, -1)
+        if bias:
+            out = out + module.bias.view(1, 1, -1)
+        
+        return out
+
+    def save_activation_hook(self, module, input, output, activation_type, layer):
+        if activation_type in ["wte", "wpe"]:
+            self.activations[activation_type] = output.detach()
+            
+            #TODO: understand what the point of this is once we implement primitive replacement
+            if hasattr(self, "converted_mlp"):
+                assert isinstance(input, tuple)
+                self.variables[activation_type] = F.one_hot(input[0],
+                        num_classes=self.model.config.vocab_size if activation_type == "wte" else self.model.config.max_position_embeddings
+                        ).float()
+        else:
+            raise NotImplementedError()
+
+    def attn_pre_hook(self, module, input, layer):
+        """
+        As with the path-hooks, the model now masks each input value and executes multiple forward passes
+        to construct the per-(head, input) paths for the attention layer. We start by computing a list of
+        activation inputs to keep for each head and then run a custom forward method on these inputs only.
+        """
+        
+        self.current_layer = layer
+        activation_names_to_keep_per_head = [
+            [
+                self.config[layer]["v"][head][i]
+                if i < len(self.config[layer]['v'][head])
+                else None
+                for head in range(self.model.transformer.h[layer].attn.num_heads)
+            ]
+            for i in range(max(len(self.config[layer]["v"][head])
+                            for head in range(self.model.transformer.h[layer].attn.num_heads)))
+        ]
+        
+        for activation_name_to_keep in activation_names_to_keep_per_head:
+            self.activation_name_to_keep = activation_name_to_keep
+            self.attention_forward(module, layer=layer)
+        
+        self.activation_name_to_keep
+    
+    def attention_forward(self, module, layer=None):
+        """
+        
+        """
+        assert self.current_layer == layer
+        assert hasattr(self, "activation_name_to_keep") and self.activation_name_to_keep is not None
+        
+        num_heads = module.num_heads
+        head_dim = module.head_dim
+        split_size = module.split_size  # Indicates the size of each Q, K and V
+        batch_size, seq_len, d_model = self.activations["wte"].size()
+        device = self.activations["wte"].device
+        
+        # 1. Compute the values for each head (result of linear projection)
+        input_activations = []
+        for head in range(num_heads):
+            if self.activation_name_to_keep[head] is not None:
+                activation_name = self.activation_name_to_keep[head]
+                input_act = self.activations[activation_name]
+                
+                ln_var = self.oa_vecs.ln_var[self.oa_vecs.to_ln_idx[(layer, "v", head, activation_name)]].exp()
+                input_act = self._linear_layer_norm(self.ln_1[layer], input_act, ln_var, bias=False)  # avoid adding bias term multiple times -> left to output oa vec
+            else:
+                input_act = torch.zeros_like(self.activations["wte"])
+            
+            input_activations.append(input_act)
+            
+        input_activations = torch.stack(input_activations)
+        
+        # Note: we skip Q and K indices in the weight to access only value weights
+        output_activations = input_activations.flatten(start_dim=1, end_dim=2) @ \
+            module.c_attn.weight[:, split_size * 2:].view(d_model, num_heads, head_dim).transpose(0, 1)
+        value_states = output_activations.transpose(0, 1).contiguous().view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
+        
+        # 2. Compute attention weights
+        attn_weights =  torch.zeros(batch_size, num_heads, seq_len, seq_len, device=device)
+        for head in range(num_heads):
+            
+            # Compute products with ablated keys (oa=0)
+            for activation_name_to_keep_q, activation_name_to_keep_k in self.config[layer]["qk"][head]:
+                ln_var = self.oa_vecs.ln_var[self.oa_vecs.to_ln_idx[(layer, "q", head)]].exp()
+                q_act = self._linear_layer_norm(self.ln_1[layer], self.activations[activation_name_to_keep_q], ln_var, bias=False)
+                ln_var = self.oa_vecs.ln_var[self.oa_vecs.to_ln_idx[(layer, "k", head)]].exp()
+                k_act = self._linear_layer_norm(self.ln_1[layer], self.activations[activation_name_to_keep_k], ln_var, bias=False)
+            
+                query_states = q_act @ module.c_attn.weight[:, head * head_dim:(head + 1) * head_dim].unsqueeze(0)
+                key_states = k_act @ module.c_attn.weight[:, split_size + head*head_dim : split_size + (head + 1) * head_dim].unsqueeze(0)
+                product = torch.matmul(query_states, key_states.transpose(-1, -2))
+                
+                coef = self.masks[:, self.mapping_to_param_idx[(layer, head, (activation_name_to_keep_q, activation_name_to_keep_k))]]
+                first_term = product * coef.view(-1, 1, 1)
+                attn_weights[:, head, :, :] += first_term
+            
+            # Compute products with ablated queries (learned oa)
+            for k_name in self.config[layer]["k"][head]:
+                k_act = self.activations[k_name]
+                ln_var = self.oa_vecs.ln_var[self.oa_vecs.to_ln_idx[(layer, "k", head)]].exp()
+                k_act = self._linear_layer_norm(self.ln_1[layer], k_act, ln_var, bias=False)
+                key_states = k_act @ module.c_attn.weight[:, split_size + head * head_dim : split_size + (head + 1) * head_dim].unsqueeze(0)
+                
+                q_bias_term = self.oa_vecs.q_bias_term[self.oa_vecs.to_q_bias[(layer, head, k_name)]]
+                coef = self.masks[:, self.mapping_to_param_idx[(layer, head, k_name)]].view(-1, 1, 1)
+                q_bias_term = q_bias_term.view(1, 1, -1) * coef * (coef > 0.999).float() + \
+                    q_bias_term.view(1, 1, -1).detach() * coef * (coef <= 0.999).float()
+                product = torch.matmul(q_bias_term, key_states.transpose(-1, -2))
+                
+                attn_weights[:, head, :, :] += product
+        
+        # 3. Scale attention weights
+        if module.scale_attn_weights:
+            attn_weights = attn_weights / torch.full(
+                [], value_states.size(-1) ** 0.5, dtype=attn_weights.dtype, device=attn_weights.device
+            )
+        
+        # 4. Causal masking
+        query_length, key_length = seq_len, seq_len
+        causal_mask = module.bias[:, :, key_length - query_length : key_length, :key_length]
+        mask_value = torch.finfo(attn_weights.dtype).min  # Get floating point data type minimum value (-\infty)
+        mask_value = torch.full([], mask_value, dtype=attn_weights.dtype, device=attn_weights.device)
+        attn_weights = torch.where(causal_mask, attn_weights.to(attn_weights.dtype), mask_value)
+        
+        attn_weights = F.softmax(attn_weights, dim=-1)  # Apply softmax to key dimension
+        attn_weights = attn_weights.type(value_states.dtype)  # Downcast so attention output mul does not fail (no mixed precision)
+        self.activations[f"attn_weights-{layer}"] = attn_weights.detach()
+        
+        # 5. Compute attention output
+        attn_output = torch.matmul(attn_weights, value_states)
+        attn_output = attn_output.transpose(1, 2)
+        
+        attention_by_head = attn_output.contiguous().view(batch_size * seq_len, num_heads, head_dim)
+        attention_by_head_output = attention_by_head.transpose(0, 1) @ module.c_proj.weight.view(num_heads, head_dim, d_model)
+        attention_by_head_output = attention_by_head_output.view(num_heads, batch_size, seq_len, d_model).unbind(dim=0)
+        
+        # 6. Split attention output by head
+        for head, attn in enumerate(attention_by_head_output):
+            if self.activation_name_to_keep[head] is not None:
+                self.activations[f"attn_output-{layer}-{head}-{self.activation_name_to_keep[head]}"] = attn
+                if hasattr(self, "converted_mlp") and self.activation_name_to_keep[head] in self.variables:
+                    pass
+        
+        return None
+    
+    def mlp_hook(self, module, input, output, layer):
+        """This hook is largely unchanged from the Full-Paths Hook equivalent"""
+        
+        if len(self.config[layer]["mlp"]) == 0:
+            return None
+        
+        if not self.split_mlp:
+            if hasattr(self, "converted_mlp") and f"mlp-{layer}" in self.converted_mlp:
+                #TODO: implement when working on MLP primitive replacement
+                pass
+            else:
+                summed_activation = torch.zeros_like(input[0])
+                for activation_name in self.config[layer]["mlp"]:
+                    summed_activation = summed_activation + self.activations[activation_name]
+                
+                oa = self.oa_vecs.output_vertex_oa[self.oa_vecs.to_out_oa_idx[(layer, "mlp")]]
+                summed_activation = summed_activation + oa.view(1, 1, -1)
+                
+                ln_var = self.oa_vecs.ln_var[self.oa_vecs.to_ln_idx[(layer, "mlp")]].exp()
+                input_activation = self._linear_layer_norm(self.ln_2[layer], summed_activation, ln_var)
+                
+                output = module.forward(input_activation)
+            
+            self.activations[f"mlp-{layer}"] = output
+            return output
+
+        else:
+            for activation_name in self.config[layer]["mlp"]:
+                if hasattr(self, "converted_mlp") and f"mlp-{layer}-{activation_name}" in self.converted_mlp:
+                    #TODO: implement when we work on MLP primitive rep
+                    pass
+                else:
+                    ln_var = self.oa_vecs.ln_var[self.oa_vecs.to_ln_idx[(layer, "mlp", activation_name)]].exp()
+                    input_activation = self._linear_layer_norm(self.ln_2[layer], self.activations[activation_name], ln_var)
+                    
+                    output = self.oa_vecs.mlps[f"{layer} {activation_name}"](input_activation)
+                
+                self.activations[f"mlp-{layer}-{activation_name}"] = output
+            
+            return None
+    
+    def lm_head_hook(self, module, input, output):
+        """This hook is largely unchanged from the Full-Paths Hook equivalent"""
+        
+        summed_activation = torch.zeros_like(input[0])
+        for activation_name in self.config["lm_head"]:
+            summed_activation = summed_activation + self.activations[activation_name]
+        
+        oa = self.oa_vecs.output_vertex_oa[self.oa_vecs.to_out_oa_idx[("lm_head",)]]
+        summed_activation = summed_activation + oa.view(1, 1, -1)
+        
+        ln_var = self.oa_vecs.ln_var[self.oa_vecs.to_ln_idx[("lm_head",)]].exp()
+        input_activation = self._linear_layer_norm(self.ln_f, summed_activation, ln_var)
+        
+        output = module.forward(input_activation)
+        return output
+    
+    def remove_hooks(self):
+        for h in self.hooks:
+            h.remove()
+    
+    def __call__(self, *args, masks=None, oa_vecs: OptimalAblationVectors=None, **kwargs):
+        if masks is not None:
+            self.masks = masks
+            self.oa_vecs = oa_vecs
+        else:
+            assert hasattr(self, "mask_sampler") and self.mask_sampler is not  None
+            assert self.oa_vecs is not None
+            
+            if args:
+                bz = args[0].size(0)
+            else:
+                bz = kwargs['input_ids'].size(0)
+            
+            self.masks = self.mask_sampler.sample_binary_masks(bz)
+            
+        return self.model(*args, **kwargs)

@@ -16,7 +16,7 @@ from data.CustomCollator import CustomCollator
 from pruning.tasks.registry import get_task
 from pruning.utilities.pruning_dataclasses import PruningRunConfig, StageConfig
 from pruning.utilities.pruning_utils import int_key_hook
-from pruning.utilities.metrics_logger import MetricsLogger
+from utilities.metrics_logger import MetricsLogger
 
 class PruningStage(ABC):
     """

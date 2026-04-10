@@ -16,7 +16,7 @@ from pruning.core.hooks import GPT2QKHooks
 from pruning.core.OptimalAblationVectors import OptimalQueryBiasVectors
 from pruning.core.mask_samplers import QKMaskSampler
 from pruning.stages.base import PruningStage
-from pruning.utilities.metrics_logger import MetricsLogger
+from utilities.metrics_logger import MetricsLogger
 
 class CausalPruningStage3(PruningStage):
     

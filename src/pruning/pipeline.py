@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from pruning.utilities.logger import setup_logger
-from pruning.utilities.metrics_logger import MetricsLogger
+from utilities.logger import setup_logger
+from utilities.metrics_logger import MetricsLogger
 from pruning.stages.stage1 import CausalPruningStage1
 from pruning.stages.stage2 import CausalPruningStage2
 from pruning.stages.stage3 import CausalPruningStage3

@@ -210,7 +210,7 @@ __marimo__/
 .DS_Store
 
 # Ignore the output directory
-src/pruning/out/*
+src/out/*
 
 # Ignore agent stuff
 GEMINI.md

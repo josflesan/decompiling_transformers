@@ -1,7 +1,7 @@
 seed: 0
 device: mps
 exp_name: prune_test
-output_dir: 'src/pruning/out'
+output_dir: 'src/out'
 model_path: 'models/count-%2l4h256d4lr01drop'
 init_sample_param: 8  # sigmoid(8) approx 1
 lr_sampler_for_pruning: 0.1
@@ -11,23 +11,23 @@ lr_mlp_for_pruning: 0.001
 
 pruning_stages:
 
-  # stage1:
-  #   linear_ln: True
-  #   lamb: 0.00000065
-  #   num_steps: 1000
-  #   train_batch_size: 120
-  #   mini_batch_size: 30
-  #   test_batch_size: 120
-  #   num_repeat: 12
+  stage1:
+    linear_ln: True
+    lamb: 0.00000065
+    num_steps: 1000
+    train_batch_size: 120
+    mini_batch_size: 30
+    test_batch_size: 120
+    num_repeat: 12
   
-  # stage2:
-  #   split_mlp: True
-  #   lamb: 0.000001 # Old value: 0.00000065
-  #   num_steps: 500
-  #   num_repeat: 12
-  #   train_batch_size: 120
-  #   mini_batch_size: 20
-  #   test_batch_size: 120
+  stage2:
+    split_mlp: True
+    lamb: 0.000001 # Old value: 0.00000065
+    num_steps: 500
+    num_repeat: 12
+    train_batch_size: 120
+    mini_batch_size: 20
+    test_batch_size: 120
 
   stage3:
     lamb: 0.00000065

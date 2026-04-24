@@ -24,7 +24,7 @@ if not runs:
     st.stop()
 
 run_name = st.sidebar.selectbox("Select Run", runs)
-run_dir = PRUNING_EXPERIMENT_DIR / run_name
+run_dir = PRUNING_EXPERIMENT_DIR / run_name / 'pruning'
 metrics_file = run_dir / "metrics.jsonl"
 
 # ----------------------------

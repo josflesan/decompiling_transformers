@@ -41,7 +41,7 @@ class MLPPrimitivesConfig:
     
     def __post_init__(self):
         # Set up full output directory
-        self.full_output_dir = Path(self.output_dir) / self.exp_name
+        self.full_output_dir = Path(self.output_dir) / self.exp_name / 'mlp_primitives'
         if not self.full_output_dir.exists():
             self.full_output_dir.mkdir(parents=True)
         

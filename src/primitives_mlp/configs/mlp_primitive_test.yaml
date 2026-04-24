@@ -1,7 +1,7 @@
 seed: 0
 device: mps
 exp_name: mlp_primitives_test
-output_dir: 'src/primitives_mlp/out'
+output_dir: 'src/out'
 
 exp_path: ''
 series_path: ''

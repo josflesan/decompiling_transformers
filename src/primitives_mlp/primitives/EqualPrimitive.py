@@ -10,7 +10,7 @@ class EqualPrimitive(Primitive):
     The equal primitive is asking if all values are nearly identical
     """
     
-    def __init__(self, name: str, indices: List[int], single_input: bool = True):
+    def __init__(self, name: str, indices: List[int] = [], single_input: bool = True):
         super().__init__(name, single_input)
         self.indices = indices
     
@@ -20,6 +20,9 @@ class EqualPrimitive(Primitive):
         out = torch.stack([out, 1 - out], dim=1)
         
         return out
+    
+    def set_indices(self, indices):
+        self.indices = indices
     
     def output_dim(self, input_dim: torch.Size) -> torch.Size:
         return torch.Size([input_dim[0], 2])

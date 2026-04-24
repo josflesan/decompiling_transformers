@@ -1,0 +1,56 @@
+seed: 0
+device: mps
+exp_name: mlp_primitives_test
+output_dir: 'src/primitives_mlp/out'
+
+exp_path: ''
+series_path: ''
+skip_convert: False
+skip_vis: False
+do_test: False
+range_50: False
+success_threshold: 0.92
+failure_threshold: 0.9
+
+# MLP Primitives
+mlp_primitives:
+  - type: noop
+
+  # Sharpen primitives
+  - type: sharpen
+    pow: 2
+  - type: sharpen
+    pow: 3
+  - type: sharpen
+    pow: 5
+  
+  - type: harden
+  - type: erase
+
+  # 01-balance primitives
+  - type: zeroone
+    pow: 0.5
+    center: 0
+  - type: zeroone
+    pow: 0.05
+    center: 0
+  - type: zeroone
+    pow: 0.01
+    center: 0
+  
+  # Forall primitives
+  - type: forall
+    threshold: 0.95
+  - type: forall
+    threshold: 0.9
+  - type: forall
+    threshold: 0.85
+  - type: forall
+    threshold: 0.8
+  - type: forall
+    threshold: 0.75
+  - type: forall
+    threshold: 0.7
+  
+  - type: exists
+  - type: equal

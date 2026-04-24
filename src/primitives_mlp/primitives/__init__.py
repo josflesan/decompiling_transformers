@@ -1,3 +1,4 @@
+from .ErasePrimitive import ErasePrimitive
 from .EqualPrimitive import EqualPrimitive
 from .ExistsPrimitive import ExistsPrimitive
 from .ForallPrimitive import ForallPrimitive

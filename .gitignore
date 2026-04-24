@@ -211,3 +211,6 @@ __marimo__/
 
 # Ignore the output directory
 src/pruning/out/*
+
+# Ignore agent stuff
+GEMINI.md

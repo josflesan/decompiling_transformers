@@ -9,7 +9,7 @@ class ExistsPrimitive(Primitive):
     The exists primitive is asking if a component is non-negligible using a threshold
     """
     
-    def __init__(self, name: str, idx: int, single_input: bool = True):
+    def __init__(self, name: str, idx: int = 0, single_input: bool = True):
         super().__init__(name, single_input)
         self.idx = idx
         self.threshold = 0.1
@@ -19,6 +19,9 @@ class ExistsPrimitive(Primitive):
         out = torch.stack([out, 1 - out], dim=1)
         
         return out
+
+    def set_idx(self, idx):
+        self.idx = idx
     
     def output_dim(self, input_dim: torch.Size) -> torch.Size:
         return torch.Size([input_dim[0], 2])

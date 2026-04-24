@@ -1,7 +1,7 @@
 import torch
 
 from primitives_mlp.primitives.base import Primitive
-from primitives_mlp.primitives.registry import register
+from primitives_mlp.utilities.registry import register
 
 @register("noop")
 class NoOpPrimitive(Primitive):

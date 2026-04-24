@@ -1,11 +1,17 @@
 import torch
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 
-from primitives_mlp.primitives.base import Primitive
+if TYPE_CHECKING:
+    from primitives_mlp.primitives.base import Primitive
 
 # --- Config dataclasses
+@dataclass
+class PrimitiveSearchOutput:
+    best_primitive: "Primitive"
+    best_C: torch.Tensor
+    best_accuracy: float
 
 @dataclass
 class PrimitiveConfig:
@@ -45,9 +51,3 @@ class MLPPrimitivesConfig:
             else torch.device("mps") if self.device == 'mps' and torch.backends.mps.is_available()
             else torch.device("cpu")
         )
-
-@dataclass
-class PrimitiveSearchOutput:
-    best_primitive: Primitive
-    best_C: torch.Tensor
-    best_accuracy: float

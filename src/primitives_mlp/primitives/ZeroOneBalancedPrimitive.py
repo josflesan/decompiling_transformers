@@ -1,7 +1,8 @@
 import torch
 
 from primitives_mlp.primitives.base import Primitive
-from primitives_mlp.primitives.registry import register
+from primitives_mlp.utilities.registry import register
+from primitives_mlp.utilities.mlp_primitive_utils import PrimitiveType
 
 @register("zeroone")
 class ZeroOneBalancedPrimitive(Primitive):
@@ -17,8 +18,8 @@ class ZeroOneBalancedPrimitive(Primitive):
     where x_1 is the number of 1s and x_0 is the number of 0s
     """
     
-    def __init__(self, name: str, pow: float, center: float, single_input: bool = True):
-        super().__init__(name, single_input)
+    def __init__(self, type: PrimitiveType, name: str, pow: float, center: float, single_input: bool = True):
+        super().__init__(type, name, single_input)
         
         self.pow = pow
         self.center = center  # represents the value at which the system can be considered to be "balanced"

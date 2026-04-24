@@ -1,10 +1,13 @@
 import torch
 from abc import ABC, abstractmethod
 
+from primitives_mlp.utilities.mlp_primitive_utils import PrimitiveType
+
 class Primitive(ABC):
     """Base primitive class implementing Template Method pattern to handle input tensor pre- and post-processing."""
     
-    def __init__(self, name: str, single_input: bool = True):
+    def __init__(self, type: PrimitiveType, name: str, single_input: bool = True):
+        self.type = type
         self.name = name
         self.single_input = single_input
     
@@ -47,5 +50,5 @@ class Primitive(ABC):
     def output_dim(self, input_dim: torch.Size) -> torch.Size:
         pass
     
-    def __str__(self):
-        print(f"MLP Primitive: {self.name} | Single-Input: {self.single_input}")
+    def __str__(self) -> str:
+        return f"MLP Primitive: {self.name} | Single-Input: {self.single_input}"

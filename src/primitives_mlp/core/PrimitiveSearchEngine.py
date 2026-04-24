@@ -9,10 +9,11 @@ and maintains the state of the model for accuracy validation
 
 import logging
 import torch
+from typing import List
 
 from primitives_mlp.primitives.base import Primitive
-from primitives_mlp.primitives.registry import PrimitiveType, build_primitive
 from primitives_mlp.utilities.mlp_primitive_dataclasses import PrimitiveSearchOutput
+from primitives_mlp.utilities.mlp_primitive_utils import PrimitiveType, build_primitive
 
 class PrimitiveSearchEngine:
     
@@ -54,6 +55,7 @@ class PrimitiveSearchEngine:
     
     def search(
         self,
+        path: str,
         mlp_inputs: torch.Tensor,
         mlp_outputs: torch.Tensor
     ) -> PrimitiveSearchOutput:
@@ -65,8 +67,34 @@ class PrimitiveSearchEngine:
             best_C = None            
             
             # Filter the primitive set
-            
+            filtered_primitives = []
+            for primitive in self.all_primitives:
+                
+                match(primitive.type):
+                    
+                    case PrimitiveType.EXISTS:
+                        # Add exists primitive to each position
+                        for i in range(mlp_inputs.size(-1)):
+                            filtered_primitives.append(build_primitive(PrimitiveType.EXISTS, idx=i))
+                    
+                    case PrimitiveType.EQUALS:
+                        # for 0, 1 enough, but should add much more possibilities for a,b,c,d...
+                        if mlp_inputs.size(-1) >= 6:
+                            filtered_primitives.append(build_primitive(PrimitiveType.EQUALS, indices=list(range(mlp_inputs.size(-1) - 4))))
+                    
+                    case PrimitiveType.ZEROONE:
+                        #TODO: explain this
+                        if mlp_inputs.size(-1) == 6 and "attn_output" in path:
+                            filtered_primitives.append(build_primitive(PrimitiveType.ZEROONE, pow=primitive.pow, center=0))
+
+                    case _:
+                        filtered_primitives.append(primitive)
             
             # Test each of the primitives
-
+            
         
+        return PrimitiveSearchOutput(
+        best_primitive=best_primitive,
+            best_C=best_C,
+            best_accuracy=best_acc,
+        )

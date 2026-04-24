@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from primitives_mlp.primitives.base import Primitive
-from primitives_mlp.primitives.registry import register
+from primitives_mlp.utilities.registry import register
 
 @register("harden")
 class HardenPrimitive(Primitive):

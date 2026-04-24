@@ -4,7 +4,6 @@ import torch
 from primitives_mlp.pipeline import MLPPrimitivePipeline
 from primitives_mlp.utilities.mlp_primitive_utils import load_config
 from primitives_mlp.utilities.mlp_primitive_dataclasses import MLPPrimitivesConfig
-from primitives_mlp.primitives.registry import PrimitiveType, build_primitive, PRIMITIVE_REGISTRY
 
 def main():
     # Read configuration
@@ -20,8 +19,7 @@ def main():
     
     # Initialize MLP Primitive Replacement Pipeline and run
     mlp_primitives_pipeline = MLPPrimitivePipeline(run_config)
-    print(mlp_primitives_pipeline.all_primitives)
-    # mlp_primitives_pipeline.run()
+    mlp_primitives_pipeline.run()
     
     # TEST: check to see if we can get primitive and run them
     # test_primitive = build_primitive(PrimitiveType.ZEROONE, pow=0.5, center=0.5)

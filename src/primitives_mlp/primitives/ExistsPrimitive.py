@@ -1,7 +1,8 @@
 import torch
 
 from primitives_mlp.primitives.base import Primitive
-from primitives_mlp.primitives.registry import register
+from primitives_mlp.utilities.registry import register
+from primitives_mlp.utilities.mlp_primitive_utils import PrimitiveType
 
 @register("exists")
 class ExistsPrimitive(Primitive):
@@ -9,8 +10,8 @@ class ExistsPrimitive(Primitive):
     The exists primitive is asking if a component is non-negligible using a threshold
     """
     
-    def __init__(self, name: str, idx: int = 0, single_input: bool = True):
-        super().__init__(name, single_input)
+    def __init__(self, type: PrimitiveType, name: str, idx: int = 0, single_input: bool = True):
+        super().__init__(type, name, single_input)
         self.idx = idx
         self.threshold = 0.1
     

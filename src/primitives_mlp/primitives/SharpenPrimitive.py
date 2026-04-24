@@ -1,7 +1,8 @@
 import torch
 
 from primitives_mlp.primitives.base import Primitive
-from primitives_mlp.primitives.registry import register
+from primitives_mlp.utilities.registry import register
+from primitives_mlp.utilities.mlp_primitive_utils import PrimitiveType
 
 @register("sharpen")
 class SharpenPrimitive(Primitive):
@@ -13,8 +14,8 @@ class SharpenPrimitive(Primitive):
     The applied function is (x_i^n) / sum_i(x_i^n)
     """
     
-    def __init__(self, name: str, pow: int, single_input: bool = True):
-        super().__init__(name, single_input)
+    def __init__(self, type: PrimitiveType, name: str, pow: int, single_input: bool = True):
+        super().__init__(type, name, single_input)
         self.pow = pow
     
     def _apply_primitive(self, x: torch.Tensor) -> torch.Tensor:

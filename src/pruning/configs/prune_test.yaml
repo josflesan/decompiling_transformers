@@ -11,18 +11,18 @@ lr_mlp_for_pruning: 0.001
 
 pruning_stages:
 
-  stage1:
-    linear_ln: True
-    lamb: 0.00000065
-    num_steps: 1000
-    train_batch_size: 120
-    mini_batch_size: 30
-    test_batch_size: 120
-    num_repeat: 12
+  # stage1:
+  #   linear_ln: True
+  #   lamb: 0.00000065
+  #   num_steps: 1000
+  #   train_batch_size: 120
+  #   mini_batch_size: 30
+  #   test_batch_size: 120
+  #   num_repeat: 12
   
   stage2:
     split_mlp: True
-    lamb: 0.000001 # Old value: 0.00000065
+    lamb: 0.00000065 # Old value: 0.00000065
     num_steps: 500
     num_repeat: 12
     train_batch_size: 120

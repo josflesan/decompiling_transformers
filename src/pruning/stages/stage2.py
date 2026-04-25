@@ -14,7 +14,6 @@ from pruning.core.hooks import GPT2FullPathHooks
 from pruning.core.OptimalAblationVectors import OptimalAblationVectors
 from pruning.core.mask_samplers import FullPathsMaskSampler
 from pruning.stages.base import PruningStage
-from pruning.utilities.pruning_utils import int_key_hook
 from utilities.metrics_logger import MetricsLogger
 
 class CausalPruningStage2(PruningStage):

@@ -1,5 +1,5 @@
-from pruning.tasks.base import Task
-from pruning.tasks.registry import register_task
+from tasks.base import Task
+from tasks.registry import register_task
 
 from data.CountDataset import CountDataset
 from data.CustomTokenizer import CustomTokenizer

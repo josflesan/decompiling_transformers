@@ -13,9 +13,9 @@ from transformers import GPT2LMHeadModel
 from typing import Any, Dict, List
 
 from data.CustomCollator import CustomCollator
-from pruning.tasks.registry import get_task
+from tasks.registry import get_task
 from pruning.utilities.pruning_dataclasses import PruningRunConfig, StageConfig
-from pruning.utilities.pruning_utils import int_key_hook
+from utilities.core import int_key_hook
 from utilities.metrics_logger import MetricsLogger
 
 class PruningStage(ABC):

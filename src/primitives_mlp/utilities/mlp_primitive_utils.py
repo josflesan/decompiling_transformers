@@ -4,6 +4,7 @@ tensors v and w and returns C using torch.linalg.pinv
 '''
 
 import torch
+import torch.nn.functional as F
 import random
 import numpy as np
 import os
@@ -13,6 +14,7 @@ from dacite import from_dict
 
 from primitives_mlp.utilities.registry import PRIMITIVE_REGISTRY
 from primitives_mlp.utilities.mlp_primitive_dataclasses import PrimitiveConfig, MLPPrimitivesConfig
+from utilities.core import TaskConfig
 
 class PrimitiveType(Enum):
     EQUALS = ("equal", True)  # Name, single_input
@@ -39,6 +41,9 @@ def load_config(config_path: str) -> None:
     raw['mlp_primitives'] = [
         PrimitiveConfig(**primitive) for primitive in raw['mlp_primitives']
     ]
+    
+    # Convert task config dict into TaskConfig object
+    raw['task_config'] = TaskConfig(**raw['task_config'])
     
     # Instantiate MLPPrimitivesConfig
     config = from_dict(MLPPrimitivesConfig, raw)

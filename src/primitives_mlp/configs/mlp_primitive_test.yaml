@@ -1,14 +1,17 @@
 seed: 0
 device: mps
-exp_name: mlp_primitives_test
+exp_name: prune_test
+model_path: 'models/count-%2l4h256d4lr01drop'
 output_dir: 'src/out'
 
 exp_path: ''
 series_path: ''
+
 skip_convert: False
 skip_vis: False
 do_test: False
 range_50: False
+batch_size: 128
 success_threshold: 0.92
 failure_threshold: 0.9
 
@@ -54,3 +57,9 @@ mlp_primitives:
   
   - type: exists
   - type: equal
+
+task_config:
+  name: counting
+  train_length_range: [0, 150]
+  val_length_range: [0, 150]
+  max_test_length: 150

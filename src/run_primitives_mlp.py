@@ -19,15 +19,7 @@ def main():
     
     # Initialize MLP Primitive Replacement Pipeline and run
     mlp_primitives_pipeline = MLPPrimitivePipeline(run_config)
-    mlp_primitives_pipeline.run()
-    
-    # TEST: check to see if we can get primitive and run them
-    # test_primitive = build_primitive(PrimitiveType.ZEROONE, pow=0.5, center=0.5)
-    # out = test_primitive.apply(torch.rand(size=(3, 4)))
-    
-    # assert test_primitive.output_dim(torch.Size([3, 4])) == out.shape
-    
-    # print(f"The output tensor: {out}")
+    converted_mlp = mlp_primitives_pipeline.run()
 
 if __name__ == "__main__":
     main()

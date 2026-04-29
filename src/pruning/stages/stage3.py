@@ -305,6 +305,9 @@ class CausalPruningStage3(PruningStage):
                                 self.model_config[k1][k2] = []
                                 self.logger.info(f"{node} is removed")
         
+        # Save new config
+        self.output_dict['result_patching_config_global_iteration_2'] = deepcopy(self.model_config)
+
     def run(self):
         """
         Convenience method to execute stage 3 pruning. This includes...

@@ -3,6 +3,8 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from utilities.core import TaskConfig
+
 @dataclass
 class TrainConfig:
     lr: float = 1e-3
@@ -19,13 +21,6 @@ class StageConfig:
     linear_ln: Optional[bool] = False
     mini_batch_size: Optional[int] = 0
     split_mlp: Optional[bool] = False
-
-@dataclass
-class TaskConfig:
-    name: str
-    train_length_range: List[int]
-    val_length_range: List[int]
-    max_test_length: int
 
 @dataclass
 class PruningRunConfig:

@@ -9,7 +9,8 @@ from typing import Any, Dict, List
 from pathlib import Path
 from transformers import GPT2LMHeadModel
 from dacite import from_dict
-from .pruning_dataclasses import PruningRunConfig, StageConfig, TaskConfig
+from .pruning_dataclasses import PruningRunConfig, StageConfig
+from utilities.core import TaskConfig
 
 def set_seed(seed: int) -> None:
     torch.manual_seed(seed)

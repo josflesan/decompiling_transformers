@@ -20,7 +20,6 @@ def main():
     pruning_pipeline = CausalPruningPipeline(run_config)
     pruning_pipeline.run()
 
-    #TODO: cleanup the logger
 
 if __name__ == "__main__":
     main()

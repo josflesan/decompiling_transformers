@@ -62,3 +62,5 @@ class CausalPruningPipeline:
             stage.run()
         
         self.logger.info("Causal Pruning Complete")
+        while self.logger.hasHandlers():
+            self.logger.removeHandler(self.logger.handlers[0])

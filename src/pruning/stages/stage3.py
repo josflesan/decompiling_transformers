@@ -99,7 +99,7 @@ class CausalPruningStage3(PruningStage):
         num_pretrain_steps = 500
         log_interval = 50
         batch_size = 64
-        mini_batch_size = 16  #TODO: maybe we want to add a config key for this
+        mini_batch_size = 16
         accumulation_steps = batch_size // mini_batch_size if mini_batch_size > 0 else 0
         
         # Disable gradients, define optimizers and dataloader

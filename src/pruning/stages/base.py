@@ -381,7 +381,6 @@ class PruningStage(ABC):
         model_dir = self.config.full_output_dir / f'stage{self.stage_idx + 1}' / 'pruned_model'
         model_dir.mkdir(exist_ok=True)
         
-        #TODO: this is wrong, we should be saving the pruned model not the original one!!
         self.model.save_pretrained(model_dir)
     
     @abstractmethod

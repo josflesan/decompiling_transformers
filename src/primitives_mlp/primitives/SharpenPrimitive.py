@@ -26,3 +26,8 @@ class SharpenPrimitive(Primitive):
     
     def output_dim(self, input_dim: torch.Size) -> torch.Size:
         return input_dim
+    
+    def __str__(self):
+        out = super().__str__()
+        out += f" | Pow: {self.pow}"
+        return out

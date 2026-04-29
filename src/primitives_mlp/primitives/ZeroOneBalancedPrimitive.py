@@ -32,3 +32,8 @@ class ZeroOneBalancedPrimitive(Primitive):
     
     def output_dim(self, input_dim: torch.Size) -> torch.Size:
         return torch.Size([input_dim[0], input_dim[0]])
+    
+    def __str__(self):
+        out = super().__str__()
+        out += f" | Pow: {self.pow} | Center: {self.center}"
+        return out

@@ -6,6 +6,7 @@ from functools import partial
 from itertools import product
 
 from pruning.core.OptimalAblationVectors import OptimalAblationVectors
+from primitives_mlp.utilities.mlp_primitive_utils import PrimitiveType, build_primitive
 
 class GPT2ComponentHooks:
     """
@@ -816,12 +817,12 @@ class GPT2QKHooks:
         if activation_type in ["wte", "wpe"]:
             self.activations[activation_type] = output.detach()
             
-            #TODO: understand what the point of this is once we implement primitive replacement
+            # Save the one-hot encoded input activations for the converted MLP
             if hasattr(self, "converted_mlp"):
                 assert isinstance(input, tuple)
                 self.variables[activation_type] = F.one_hot(input[0],
                         num_classes=self.model.config.vocab_size if activation_type == "wte" else self.model.config.max_position_embeddings
-                        ).float()
+                    ).float()
         else:
             raise NotImplementedError()
 
@@ -852,7 +853,12 @@ class GPT2QKHooks:
     
     def attention_forward(self, module, layer=None):
         """
-        
+        This function computes the attention output for a given layer.
+        It is used to determine the attention output for each head and input.
+
+        Args:
+            module (nn.Module): The attention module.
+            layer (int): The layer in which the attention module sits.
         """
         assert self.current_layer == layer
         assert hasattr(self, "activation_name_to_keep") and self.activation_name_to_keep is not None
@@ -948,7 +954,8 @@ class GPT2QKHooks:
             if self.activation_name_to_keep[head] is not None:
                 self.activations[f"attn_output-{layer}-{head}-{self.activation_name_to_keep[head]}"] = attn
                 if hasattr(self, "converted_mlp") and self.activation_name_to_keep[head] in self.variables:
-                    pass
+                    self.variables[f"attn_output-{layer}-{head}-{self.activation_name_to_keep[head]}"] = \
+                        self.activations[f"attn_weights-{layer}"][:, head] @ self.variables[self.activation_name_to_keep[head]]
         
         return None
     
@@ -960,8 +967,11 @@ class GPT2QKHooks:
         
         if not self.split_mlp:
             if hasattr(self, "converted_mlp") and f"mlp-{layer}" in self.converted_mlp:
-                #TODO: implement when working on MLP primitive replacement
-                pass
+                prods = [self.variables[activation_name] for activation_name in self.config[layer]["mlp"]]
+                search_results = self.converted_mlp[f"mlp-{layer}"]
+                Y = search_results.best_primitive.apply(prods)
+                self.variables[f"mlp-{layer}"] = Y
+                output = Y @ search_results.best_C.unsqueeze(0)
             else:
                 summed_activation = torch.zeros_like(input[0])
                 for activation_name in self.config[layer]["mlp"]:
@@ -981,8 +991,10 @@ class GPT2QKHooks:
         else:
             for activation_name in self.config[layer]["mlp"]:
                 if hasattr(self, "converted_mlp") and f"mlp-{layer}-{activation_name}" in self.converted_mlp:
-                    #TODO: implement when we work on MLP primitive rep
-                    pass
+                    search_results = self.converted_mlp[f"mlp-{layer}-{activation_name}"]
+                    Y = search_results.best_primitive.apply(self.variables[activation_name])
+                    self.variables[f"mlp-{layer}-{activation_name}"] = Y
+                    output = Y @ search_results.best_C.unsqueeze(0)
                 else:
                     ln_var = self.oa_vecs.ln_var[self.oa_vecs.to_ln_idx[(layer, "mlp", activation_name)]].exp()
                     input_activation = self._linear_layer_norm(self.ln_2[layer], self.activations[activation_name], ln_var)

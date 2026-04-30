@@ -19,6 +19,7 @@ class CountDataset(IterableDataset):
         self.range_min, self.range_max = length_range
         self.range_min = max(2, self.range_min)
         self.max_test_length = max_test_length
+        self.bce = False
         
         assert len(tokenizer) - 4 >= max_test_length
         assert (max_test_length >= self.range_max) or (max_test_length == -1)  # pos embedding is initialized based on max_test_length
@@ -42,7 +43,9 @@ class CountDataset(IterableDataset):
             label[:4] = [self.tokenizer.pad_token_id,] * 4  # bos + ... + sep
             
             if self.max_test_length != -1:
-                offset = random.randint(0, self.max_test_length - length)
+                # Guard against invalid ranges when generated sequences exceed max_test_length.
+                max_offset = self.max_test_length - len(instance)
+                offset = random.randint(0, max_offset) if max_offset >= 0 else 0
             else:
                 offset = 0
                 

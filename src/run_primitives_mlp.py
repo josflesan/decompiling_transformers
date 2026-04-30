@@ -1,11 +1,13 @@
 import argparse
-import torch
+from transformers import logging
 
 from primitives_mlp.pipeline import MLPPrimitivePipeline
 from primitives_mlp.utilities.mlp_primitive_utils import load_config
 from primitives_mlp.utilities.mlp_primitive_dataclasses import MLPPrimitivesConfig
 
 def main():
+    logging.set_verbosity_error()
+    
     # Read configuration
     parser = argparse.ArgumentParser(description="Run MLP Primitive Replacement")
     parser.add_argument(

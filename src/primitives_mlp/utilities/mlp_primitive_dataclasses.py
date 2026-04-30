@@ -33,15 +33,12 @@ class MLPPrimitivesConfig:
     seed: int
     device: str
     exp_name: str
-    exp_path: str
     batch_size: int
     model_path: str
-    series_path: str
     output_dir: str
     skip_convert: bool
     skip_vis: bool
     do_test: bool
-    range_50: bool
     success_threshold: float
     failure_threshold: float
     task_config: TaskConfig

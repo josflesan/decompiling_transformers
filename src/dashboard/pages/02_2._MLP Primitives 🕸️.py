@@ -17,8 +17,9 @@ st_autorefresh(interval=2000)
 st.title("MLP Primitive Replacement Dashboard")
 
 VAL_TO_BE_NON_ZERO = 0.2
-TOP_TOKENS_TO_PLOT = 1
 TOP_SAMPLES_TO_KEEP = 40
+MAX_LOGIT_OPTIONS = 60
+MAX_TICK_LABELS = 24
 
 #TODO: add column labels so the plots are more useful
 #TODO: make the heatmaps interactive so users can select the kth most important vector if needed
@@ -83,6 +84,23 @@ def _fig_to_png_bytes(fig) -> bytes:
     return buf.getvalue()
 
 
+def _compute_tick_positions_and_labels(display_labels: list[str], max_labels: int = MAX_TICK_LABELS):
+    total = len(display_labels)
+    if total <= max_labels:
+        return list(range(total)), display_labels
+
+    step = max(1, int(np.ceil(total / max_labels)))
+    positions = list(range(0, total, step))
+    if positions[-1] != total - 1:
+        positions.append(total - 1)
+    labels = [display_labels[idx] for idx in positions]
+    return positions, labels
+
+
+def _compute_image_width(total_cols: int, base: int = 560, per_col: int = 12, max_width: int = 1200) -> int:
+    return min(max_width, base + max(0, total_cols - 16) * per_col)
+
+
 def build_unembed_heatmap_image(inp_cache, out_cache, token_id: int):
     all_samples = []
     num_bins = len(inp_cache)
@@ -125,8 +143,9 @@ def build_unembed_heatmap_image(inp_cache, out_cache, token_id: int):
 
     # Input heatmap (left)
     im1 = input_ax.imshow(heatmap_data, cmap="Blues", aspect="auto", vmin=0)
-    input_ax.set_xticks(range(len(display_labels)))
-    input_ax.set_xticklabels(display_labels, rotation=45, ha="right", fontsize=7)
+    tick_pos, tick_labels = _compute_tick_positions_and_labels(display_labels)
+    input_ax.set_xticks(tick_pos)
+    input_ax.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=7)
     input_ax.set_yticks([])
     input_ax.set_title("Input", fontsize=9)
     fig.colorbar(im1, ax=input_ax, location="left", fraction=0.04, pad=0.02)
@@ -143,7 +162,32 @@ def build_unembed_heatmap_image(inp_cache, out_cache, token_id: int):
 
     image = _fig_to_png_bytes(fig)
     plt.close(fig)
-    return image
+    return image, _compute_image_width(len(display_cols), base=560, per_col=14)
+
+
+def get_ranked_logit_options(out_cache, max_options: int = MAX_LOGIT_OPTIONS):
+    score_accumulator = None
+    for bin_item in out_cache:
+        bin_out = torch.as_tensor(bin_item).cpu()
+        if bin_out.numel() == 0 or bin_out.ndim != 3:
+            continue
+
+        # For each output token, estimate influence magnitude from diagonal effects.
+        diag_vals = bin_out.diagonal(dim1=1, dim2=2).abs()
+        token_scores = diag_vals.max(dim=0)[0]
+
+        if score_accumulator is None:
+            score_accumulator = token_scores
+        else:
+            score_accumulator = torch.maximum(score_accumulator, token_scores)
+
+    if score_accumulator is None or score_accumulator.numel() == 0:
+        return [], {}
+
+    ranked = torch.argsort(score_accumulator, descending=True).tolist()
+    ranked = ranked[: min(max_options, len(ranked))]
+    score_map = {token_id: float(score_accumulator[token_id].item()) for token_id in ranked}
+    return ranked, score_map
 
 
 def build_select_heatmap_image(q_inp_cache, k_inp_cache, out_cache, cluster_idx: int = 0):
@@ -199,15 +243,17 @@ def build_select_heatmap_image(q_inp_cache, k_inp_cache, out_cache, cluster_idx:
     )
 
     im_q = q_ax.imshow(q_heatmap, cmap="Blues", aspect="auto", vmin=0)
-    q_ax.set_xticks(range(len(q_labels)))
-    q_ax.set_xticklabels(q_labels, rotation=45, ha="right", fontsize=7)
+    q_tick_pos, q_tick_labels = _compute_tick_positions_and_labels(q_labels)
+    q_ax.set_xticks(q_tick_pos)
+    q_ax.set_xticklabels(q_tick_labels, rotation=45, ha="right", fontsize=7)
     q_ax.set_yticks([])
     q_ax.set_title("Query Input", fontsize=9)
     fig.colorbar(im_q, ax=q_ax, location="left", fraction=0.04, pad=0.02)
 
     im_k = k_ax.imshow(k_heatmap, cmap="Blues", aspect="auto", vmin=0)
-    k_ax.set_xticks(range(len(k_labels)))
-    k_ax.set_xticklabels(k_labels, rotation=45, ha="right", fontsize=7)
+    k_tick_pos, k_tick_labels = _compute_tick_positions_and_labels(k_labels)
+    k_ax.set_xticks(k_tick_pos)
+    k_ax.set_xticklabels(k_tick_labels, rotation=45, ha="right", fontsize=7)
     k_ax.set_yticks([])
     k_ax.set_title("Key Input", fontsize=9)
     fig.colorbar(im_k, ax=k_ax, fraction=0.04, pad=0.02)
@@ -223,7 +269,7 @@ def build_select_heatmap_image(q_inp_cache, k_inp_cache, out_cache, cluster_idx:
 
     image = _fig_to_png_bytes(fig)
     plt.close(fig)
-    return image
+    return image, _compute_image_width(len(q_cols) + len(k_cols), base=760, per_col=10)
 
 
 def render_path_heatmaps(path: str, mlp_input_output: dict):
@@ -251,27 +297,28 @@ def render_path_heatmaps(path: str, mlp_input_output: dict):
         if not inp_cache or not out_cache:
             continue
 
-        out_tensor = torch.as_tensor(out_cache[0]).cpu()
-        if out_tensor.numel() == 0:
+        ranked_token_ids, token_score_map = get_ranked_logit_options(out_cache)
+        if not ranked_token_ids:
             continue
 
-        # Prefer the most impacted output tokens to mimic author plots.
-        token_scores = out_tensor[:, :, :].abs().max(dim=0)[0].max(dim=1)[0]
-        token_ids = torch.topk(
-            token_scores,
-            k=min(TOP_TOKENS_TO_PLOT, token_scores.numel())
-        ).indices.tolist()
-
         st.markdown(f"**Unexplained MLP path:** `{lens_path}`")
-        for token_id in token_ids:
-            image = build_unembed_heatmap_image(inp_cache, out_cache, token_id)
-            if image is None:
-                continue
-            st.image(
-                image,
-                caption=f"Input (left) and output (right) heatmap for token {token_id}",
-                width=560
-            )
+        selected_token_id = st.selectbox(
+            "Output logit to focus on",
+            options=ranked_token_ids,
+            index=0,
+            format_func=lambda tok: f"logit[{tok}] (importance {token_score_map.get(tok, 0.0):.4f})",
+            key=f"logit_selector_{path}_{lens_path}",
+        )
+
+        heatmap_result = build_unembed_heatmap_image(inp_cache, out_cache, int(selected_token_id))
+        if heatmap_result is None:
+            continue
+        image, image_width = heatmap_result
+        st.image(
+            image,
+            caption=f"Input (left) and output (right) heatmap for logit[{selected_token_id}]",
+            width=image_width
+        )
 
     for select_path in sorted(matching_select_paths):
         payload = mlp_input_output.get(select_path)
@@ -281,9 +328,10 @@ def render_path_heatmaps(path: str, mlp_input_output: dict):
         if not q_inp_cache or not k_inp_cache or not out_cache:
             continue
 
-        image = build_select_heatmap_image(q_inp_cache, k_inp_cache, out_cache, cluster_idx=0)
-        if image is None:
+        heatmap_result = build_select_heatmap_image(q_inp_cache, k_inp_cache, out_cache, cluster_idx=0)
+        if heatmap_result is None:
             continue
+        image, image_width = heatmap_result
 
         q_path, k_path, attn_layer, attn_head = select_path
         st.markdown(
@@ -293,7 +341,7 @@ def render_path_heatmaps(path: str, mlp_input_output: dict):
         st.image(
             image,
             caption="Query input (left), key input (middle), output (right)",
-            width=760,
+            width=image_width,
         )
 
 runs = sorted([p.name for p in PRUNING_EXPERIMENT_DIR.iterdir() if p.is_dir()])

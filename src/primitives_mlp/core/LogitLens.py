@@ -1,13 +1,14 @@
 import logging
 import re
 import torch
+from collections import defaultdict
 from sklearn.cluster import KMeans
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from typing import Dict, Tuple
 
 from data.CustomTokenizer import CustomTokenizer
-from primitives_mlp.utilities.activation_tracing import trace_mlp
+from primitives_mlp.utilities.activation_tracing import trace_mlp, trace_mlp_multi
 from primitives_mlp.utilities.mlp_primitive_dataclasses import PrimitiveSearchOutput
 from primitives_mlp.utilities.parameter_getters import (
     get_attn_weights_for_head,
@@ -48,6 +49,7 @@ class LogitLens:
         self.hooked_model = hooked_model
         self.device = self.hooked_model.device
         self.oa_vecs = oa_vecs
+        self.single_input_mlps = hasattr(self.oa_vecs, "mlps")
         self.tokenizer = tokenizer
         self.dataloader = dataloader
         self.converted_mlp = converted_mlp
@@ -227,6 +229,85 @@ class LogitLens:
             idx -= 1
 
         return mlp_inputs, mlp_outputs
+
+    @torch.no_grad()
+    def _inspect_multi_mlp(
+        self,
+        complete_path: str
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        pattern = r'attn_output-\d+-\d+|mlp-\d+|lm_head|wte|wpe'
+        split_nodes = re.findall(pattern, complete_path)
+        
+        mlp_path = split_nodes[-1]
+        mlp_layer = int(split_nodes[-1][4:])
+        config = self.hooked_model.config
+        device = self.hooked_model.device
+        
+        self.logger.info(f"Inpsecting: {complete_path}")
+        
+        all_mlp_inputs = []
+        all_mlp_outputs = []
+        
+        pbar = tqdm(total=self.cache_num)
+        for idx, batch in enumerate(self.dataloader):
+            labels = batch.pop("labels")
+            batch = {k: v.to(device) for k, v in batch.items()}
+            
+            mlp_out = None
+            def temp_hook(module, input, output):
+                nonlocal mlp_out
+                mlp_out = self.hooked_model.activations[mlp_path]
+            handle = self.hooked_model.model.transformer.h[mlp_layer].mlp.register_forward_hook(temp_hook)
+            
+            self.hooked_model(masks=torch.ones((1, 1), device=device), oa_vecs=self.oa_vecs, **batch)
+            
+            masks = (batch['input_ids'] != self.tokenizer.pad_token_id) & (batch['input_ids'] != self.tokenizer.eos_token_id)
+            
+            handle.remove()
+            input_dependents = trace_mlp_multi(self.hooked_model, self.converted_mlp, mlp_path, batch['input_ids'], batch['position_ids'])
+            input_dependents = [input_dependent[masks] for input_dependent in input_dependents]
+            mlp_out = mlp_out[masks]
+            
+            # Remove duplicates within batch
+            cat_input_dependents = torch.cat(input_dependents, dim=1)
+            dist = torch.cdist(cat_input_dependents.unsqueeze(0), cat_input_dependents.unsqueeze(0)).squeeze(0)
+            selected_ids = (dist < 1e-3).float().argmax(dim=1).unique(sorted=False)
+            
+            all_mlp_inputs.append([input_dependent[selected_ids] for input_dependent in input_dependents])
+            all_mlp_outputs.append(mlp_out[trace_mlp_multi])
+            
+            pbar.update(all_mlp_outputs[-1].size(0))
+            if sum(item.size(0) for item in all_mlp_outputs) > self.cache_num:
+                break
+        
+        pbar.close()
+        
+        all_mlp_inputs = [torch.cat(inp, dim=0) for inp in zip(*all_mlp_inputs)]
+        all_mlp_outputs = torch.cat(all_mlp_outputs, dim=0)
+        assert all(torch.allclose(item.sum(dim=1), torch.ones(item.size(0), device=device), atol=1e-3) for item in all_mlp_inputs)
+        
+        idx = len(split_nodes) - 2
+        while idx >= 0:
+            node = split_nodes[idx]
+            
+            if node == "lm_head":
+                W_ln = get_ln_matrix_for_node(self.hooked_model.model, self.oa_vecs, None, "lm_head", None)
+                all_mlp_outputs = all_mlp_outputs @ W_ln @ self.hooked_model.model.lm_head.weight.data.T
+            elif node.startswith("attn_output"):
+                _, layer, head = node.split("-")
+                layer, head = int(layer), int(head)
+                past_path = "-".join(split_nodes[idx + 1:])
+                W_ln = get_ln_matrix_for_node(self.hooked_model.model, self.oa_vecs, layer, "v", head, past_path)
+                W_v, W_o = get_ov_for_head(self.hooked_model.model, layer, head)
+                all_mlp_outputs = all_mlp_outputs @ W_ln @ W_v @ W_o
+            else:
+                raise RuntimeError(f"Invalid Node: {node}")
+
+            idx -= 1
+        
+        all_mlp_inputs = {inp_v_path: mlp_inp for inp_v_path, mlp_inp in zip(config[int(mlp_path[4:])]["mlp"], all_mlp_inputs)}
+        
+        return all_mlp_inputs, all_mlp_outputs
     
     @torch.no_grad()
     def _inspect_path(
@@ -282,7 +363,6 @@ class LogitLens:
         
         assert torch.allclose(all_mlp_inputs.sum(dim=1), torch.ones(all_mlp_inputs.size(0), device=self.device), atol=1e-3)
         return all_mlp_inputs, all_mlp_outputs
-        
     
     @torch.no_grad()
     def inspect_mlp_logits(self, complete_path: str) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -298,10 +378,14 @@ class LogitLens:
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: input, output representative pairs
         """
-        #TODO: make this function handle both multi-source and single-source weight absorption
         
         assert complete_path.startswith("lm_head")
-        mlp_in, mlp_logits = self._inspect_mlp(complete_path)
+        
+        if self.single_input_mlps:
+            mlp_in, mlp_logits = self._inspect_mlp(complete_path)
+        else:
+            mlp_in, mlp_logits = self._inspect_multi_mlp(complete_path)
+    
         if not hasattr(self.dataloader.dataset, "bce") or not self.dataloader.dataset.bce:
             # For algorithmic tasks, subtract the second largest value from each token to aid interpretation
             # Why?: because of softmax, only the relative differences in logits matter. By centering the data
@@ -314,7 +398,7 @@ class LogitLens:
         # For each token, we identify the maximum positive logit value and divide this range
         # into 10 bins. We then identify the top 10 samples whose projected effect falls into each
         # magnitude range
-        input_cache = []  # from highest to lowest
+        input_cache = [] if self.single_input_mlps else defaultdict(list)  # from highest to lowest
         output_cache = []
         
         num_bins = 20
@@ -324,7 +408,12 @@ class LogitLens:
         
         for i in range(num_bins // 2 - 1, -1, -1):
             topk_indices = mlp_logits.masked_fill(mlp_logits > bin_edges[i:i+1], -100_000).topk(k=num_per_bin, dim=0, largest=True)[1]  # (k, vocab_size)
-            input_cache.append(mlp_in[topk_indices].clone())  # (k, vocab, in_vocab)
+            if self.single_input_mlps:
+                input_cache.append(mlp_in[topk_indices].clone())  # (k, vocab, in_vocab)
+            else:
+                for k, inp in mlp_in.items():
+                    input_cache[k].append(inp[topk_indices].clone())  # (k, vocab, in_vocab)
+
             output_cache.append(mlp_logits[topk_indices].clone())  # (k, vocab, vocab)
         
         # Similar process to above, but identify inputs that cause the MLP to suppress specific output tokens most strongly
@@ -333,7 +422,11 @@ class LogitLens:
         
         for i in range(num_bins // 2):
             topk_indices = mlp_logits.masked_fill(mlp_logits < bin_edges[i:i+1], 100_000).topk(k=num_per_bin, dim=0, largest=False)[1]  # (k, vocab_size)
-            input_cache.append(mlp_in[topk_indices].clone())  # (k, vocab, in_vocab)
+            if self.single_input_mlps:
+                input_cache.append(mlp_in[topk_indices].clone())  # (k, vocab, in_vocab)
+            else:
+                for k, inp in mlp_in.items():
+                    input_cache[k].append(inp[topk_indices].clone())  # (k, vocab, in_vocab)
             output_cache.append(mlp_logits[topk_indices].clone())  # (k, vocab, vocab)
         
         return input_cache, output_cache

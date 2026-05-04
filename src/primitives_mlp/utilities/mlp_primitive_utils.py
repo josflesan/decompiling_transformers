@@ -17,6 +17,7 @@ from primitives_mlp.utilities.mlp_primitive_dataclasses import PrimitiveConfig, 
 from utilities.core import TaskConfig
 
 class PrimitiveType(Enum):
+    # Single-Input Primitives
     EQUALS = ("equal", True)  # Name, single_input
     ERASE = ("erase", True)
     EXISTS = ("exists", True)
@@ -25,6 +26,11 @@ class PrimitiveType(Enum):
     NOOP = ("noop", True)
     SHARPEN = ("sharpen", True)
     ZEROONE = ("zeroone", True)
+    
+    # Multi-Input Primitives
+    ERASE_MULTI = ("erase", False)
+    COMBINE = ("combine", False)
+    KEEPONE = ("keepone", False)
 
 def set_seed(seed: int) -> None:
     torch.manual_seed(seed)

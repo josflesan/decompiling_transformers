@@ -7,3 +7,5 @@ from .NoOpPrimitive import NoOpPrimitive
 from .SharpenPrimitive import SharpenPrimitive
 from .base import Primitive
 from .ZeroOneBalancedPrimitive import ZeroOneBalancedPrimitive
+from .CombinePrimitive import CombinePrimitive
+from .KeepOnePrimitive import KeepOnePrimitive

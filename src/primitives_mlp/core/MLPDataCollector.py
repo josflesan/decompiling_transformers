@@ -15,7 +15,7 @@ from transformers import GPT2LMHeadModel
 from typing import Dict
 
 from primitives_mlp.utilities.mlp_primitive_dataclasses import MLPDataCollectorOutput, PrimitiveSearchOutput
-from primitives_mlp.utilities.activation_tracing import trace_mlp
+from primitives_mlp.utilities.activation_tracing import trace_mlp, trace_mlp_multi
 from pruning.core.OptimalAblationVectors import OptimalQueryBiasVectors
 from utilities.metrics_logger import MetricsLogger
 
@@ -39,21 +39,28 @@ class MLPDataCollector:
         self.metrics_logger = metrics_logger
         self.logger = logger
     
-    def collect(self, layer, mlp_inp) -> MLPDataCollectorOutput:
+    def collect(
+        self,
+        layer: int, 
+        mlp_inp: str | None
+    ) -> MLPDataCollectorOutput:
         
         # Get relevant information about the model
         d_model = self.hooked_model.model.config.hidden_size
         
-        # Detect all input MLPs and make sure input MLPs have been converted
+        # Detect all intermediate components in the path
         pattern = r'attn_output-\d+-\d+|mlp-\d+|lm_head|wte|wpe'
-        split_nodes = re.findall(pattern, mlp_inp)
-        if not all(not node.startswith("mlp") or ("-".join(split_nodes[i:]) in self.converted_mlp) for i, node in enumerate(split_nodes)):
-            self.logger.warning("Unable to convert MLP: Dependency on unconverted MLP")
-            return MLPDataCollectorOutput(
-                mlp_inputs=torch.Tensor([]),
-                mlp_outputs=torch.Tensor([]),
-                skip=True
-            )
+
+        if mlp_inp:
+            # Make sure all intermediate MLPs have been converted in the single-input case
+            split_nodes = re.findall(pattern, mlp_inp)
+            if not all(not node.startswith("mlp") or ("-".join(split_nodes[i:]) in self.converted_mlp) for i, node in enumerate(split_nodes)):
+                self.logger.warning("Unable to convert MLP: Dependency on unconverted MLP")
+                return MLPDataCollectorOutput(
+                    mlp_inputs=torch.Tensor([]),
+                    mlp_outputs=torch.Tensor([]),
+                    skip=True
+                )
         
         mlp_inputs = []
         mlp_outputs = []
@@ -97,15 +104,26 @@ class MLPDataCollector:
             handle_mlp.remove()
             
             # Trace the MLP activations back to determine relevant inputs
-            input_dependent = trace_mlp(
-                self.hooked_model,
-                self.converted_mlp,
-                self.path,
-                batch["input_ids"],
-                batch["position_ids"]
-            )
-            mlp_inputs.append(input_dependent[masks])
-            mlp_outputs.append(mlp_out[masks])
+            if mlp_inp:
+                input_dependent = trace_mlp(
+                    self.hooked_model,
+                    self.converted_mlp,
+                    self.path,
+                    batch["input_ids"],
+                    batch["position_ids"]
+                )
+                mlp_inputs.append(input_dependent[masks])
+                mlp_outputs.append(mlp_out[masks])
+            else:
+                input_dependent = trace_mlp_multi(
+                    self.hooked_model,
+                    self.converted_mlp,
+                    self.path,
+                    batch['input_ids'],
+                    batch['position_ids']
+                )
+                mlp_inputs.append([inp[masks] for inp in input_dependent])
+                mlp_outputs.append(mlp_out[masks])
             
             # Log data collection progress
             num_collected = sum(item.size(0) for item in mlp_inputs)
@@ -121,9 +139,13 @@ class MLPDataCollector:
                 break    
         
         # Convert lists into tensors
-        mlp_inputs = torch.cat(mlp_inputs, dim=0)
+        mlp_inputs = torch.cat(mlp_inputs, dim=0) if mlp_inp else [torch.cat(inps, dim=0) for inps in zip(*mlp_inputs)]
         mlp_outputs = torch.cat(mlp_outputs, dim=0)
-        assert torch.allclose(mlp_inputs.sum(dim=1), torch.ones(mlp_inputs.size(0), device=self.hooked_model.device), atol=1e-3)
+        
+        if mlp_inp:
+            assert torch.allclose(mlp_inputs.sum(dim=1), torch.ones(mlp_inputs.size(0), device=self.hooked_model.device), atol=1e-3)
+        else:
+            assert all(torch.allclose(item.sum(dim=1), torch.ones(item.size(0), device=self.hooked_model.device), atol=1e-3) for item in mlp_inputs)
         
         return MLPDataCollectorOutput(
             mlp_inputs=mlp_inputs,

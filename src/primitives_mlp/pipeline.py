@@ -41,6 +41,7 @@ class MLPPrimitivePipeline:
         self.dataloader = None
         self.hooked_model = None
         self.tokenizer = None
+        self.single_input_mlps = True
         
         # Converted MLP
         self.converted_mlp = {}
@@ -65,6 +66,17 @@ class MLPPrimitivePipeline:
             weights_only=False
         )
         self.oa_vecs.requires_grad_(False)
+        self.single_input_mlps = hasattr(self.oa_vecs, "mlps")
+        
+        # Filter primitives to only single/multi input depending on this
+        filtered_primitives = []
+        for prim in self.all_primitives:
+            if self.single_input_mlps and prim.single_input:
+                filtered_primitives.append(prim)
+            elif not self.single_input_mlps and not prim.single_input:
+                filtered_primitives.append(prim)
+    
+        self.all_primitives = filtered_primitives
         
         # 3. Load models
         self.model = GPT2LMHeadModel.from_pretrained(self.config.model_path).to(self.config.torch_device)
@@ -106,10 +118,17 @@ class MLPPrimitivePipeline:
                     if any(q.endswith(item) for item in failed_mlps) or any(k.endswith(item) for item in failed_mlps):
                         lens_qk_paths.append((q, k, layer, head))
             
-            for mlp_inp in self.pruning_config[layer]['mlp']:
-                node = f"mlp-{layer}-{mlp_inp}"
-                if node not in self.converted_mlp:
-                    failed_mlps.append(node)
+            if self.single_input_mlps:
+                for mlp_inp in self.pruning_config[layer]['mlp']:
+                    node = f"mlp-{layer}-{mlp_inp}"
+                    if node not in self.converted_mlp:
+                        failed_mlps.append(node)
+            else:
+                # Only check if more than one input to the MLP
+                if len(self.pruning_config[layer]["mlp"]) > 0:
+                    node = f"mlp-{layer}"
+                    if node not in self.converted_mlp:
+                        failed_mlps.append(node)
         
         for lm_head_inp in self.pruning_config['lm_head']:
             if any(lm_head_inp.endswith(item) for item in failed_mlps):
@@ -119,6 +138,83 @@ class MLPPrimitivePipeline:
         self.logger.info(f"Output Paths to Inspect: {lens_unembed_paths}")
         
         return lens_unembed_paths, lens_qk_paths
+
+    def _check_dependency(self, layer) -> bool:
+        """Utility to check if there is a dependency on unconverted MLPs for a multi-input MLP"""
+        
+        dependencies = []
+        pattern = r'attn_output-\d+-\d+|mlp-\d+|lm_head|wte|wpe'
+        for mlp_inp in self.hooked_model.config[layer]["mlp"]:
+            if "mlp" in mlp_inp:
+                inp_layer = int(re.findall(pattern, mlp_inp)[-1][4:])
+                dependencies.append(self._check_dependency(inp_layer))
+            else:
+                dependencies.append(True)
+        
+        return all(dependencies)
+
+    def _collect_and_search(
+        self,
+        layer: int,
+        path: str,
+        mlp_inp: str | None = None
+    ) -> bool:
+        """
+        Performs data collection and primitive search for a single path
+
+        Args:
+            layer (int): the transformer layer the MLP sits in
+            path (str): the name of the path we are attempting to convert
+            mlp_inp (str | None): the MLP input being considered in the single-input MLP case. Defaults to None.
+        """
+        
+        # 1. Collect data for primitive replacement (input, output pairs)
+        data_collector = MLPDataCollector(
+            hooked_model=self.hooked_model,
+            converted_mlp=self.converted_mlp,
+            dataloader=self.dataloader,
+            oa_vecs=self.oa_vecs,
+            path=path,
+            metrics_logger=self.metrics_logger,
+            logger=self.logger
+        )
+        data_collector_output: MLPDataCollectorOutput = data_collector.collect(layer, mlp_inp)
+        if data_collector_output.skip:
+            # Input dependency with unconverted MLP
+            return True
+        
+        # 2. Run primitive search
+        search_engine = PrimitiveSearchEngine(
+            config=self.config,
+            hooked_model=self.hooked_model,
+            original_model=self.orig_model,
+            converted_mlp=self.converted_mlp,
+            oa_vecs=self.oa_vecs,
+            dataloader=self.dataloader,
+            all_primitives=self.all_primitives,
+            metrics_logger=self.metrics_logger,
+            single_input_mlps=self.single_input_mlps,
+            logger=self.logger
+        )
+        search_output: PrimitiveSearchOutput = search_engine.search(path, layer, data_collector_output.mlp_inputs, data_collector_output.mlp_outputs)
+        self.logger.info(f"Best Primitive: {search_output.best_primitive.name} | Accuracy: {search_output.best_accuracy:.2f}")
+        
+        failed = search_output.best_accuracy < self.config.failure_threshold
+        self.metrics_logger.log(
+            task='primitive_search',
+            path=path,
+            failed=failed,
+            best_primitive=search_output.best_primitive.name,
+            best_primitive_accuracy=search_output.best_accuracy
+        )
+        
+        if failed:
+            self.logger.info(f"Unable to convert MLP: Low Accuracy ({search_output.best_accuracy:.2f})")
+        else:
+            self.converted_mlp[path] = search_output
+        
+        return False
+
 
     def run(self) -> Dict[Any, Any]:
         """
@@ -133,70 +229,56 @@ class MLPPrimitivePipeline:
             self.converted_mlp = torch.load(self.config.full_output_dir / "converted_mlp.pt", weights_only=False)
         else: 
             num_layers = len(self.hooked_model.model.transformer.h)
-            config = self.hooked_model.config
-            curr_path = 0
-            num_paths = sum([len(config[layer]['mlp']) for layer in range(num_layers)])
             for layer in range(num_layers):
                 self.logger.info(f"---------- LAYER {layer + 1} ------------")
                 
-                # For every input to the current layer's MLP...
-                for mlp_inp in config[layer]["mlp"]:
-                    # Identify the relevant path
-                    path = f"mlp-{layer}-{mlp_inp}"
-                    self.logger.info(f"Converting: {path}")
+                config = self.hooked_model.config
+                curr_path = 0
+                num_paths = sum([len(config[layer]['mlp']) for layer in range(num_layers)])
+                
+                if not self.single_input_mlps:
                     
-                    # Keep track of primitive replacement progress
+                    # If all inputs to the MLP were pruned, ignore
+                    if len(config[layer]["mlp"]) == 0:
+                        continue
+                    
+                    # Only one path to keep track of
                     self.metrics_logger.log(
                         task='primitive_replacement',
                         path_idx = curr_path + 1,
-                        total_paths = num_paths
+                        total_paths = 1
                     )
                     
-                    # 1. Collect data for primitive replacement (input, output pairs)
-                    data_collector = MLPDataCollector(
-                        hooked_model=self.hooked_model,
-                        converted_mlp=self.converted_mlp,
-                        dataloader=self.dataloader,
-                        oa_vecs=self.oa_vecs,
-                        path=path,
-                        metrics_logger=self.metrics_logger,
-                        logger=self.logger
-                    )
-                    data_collector_output: MLPDataCollectorOutput = data_collector.collect(layer, mlp_inp)
-                    if data_collector_output.skip:
-                        # Input dependency with unconverted MLP
+                    path = f"mlp-{layer}"
+                    self.logger.info(f"Converting: {path}")
+                    
+                    # Check if unsatisfiable dependency exists
+                    if not self._check_dependency(layer):
+                        self.logger.warning("Unable to convert MLP: Dependency on Unconverted MLP")
                         continue
                     
-                    # 2. Run primitive search
-                    search_engine = PrimitiveSearchEngine(
-                        config=self.config,
-                        hooked_model=self.hooked_model,
-                        original_model=self.orig_model,
-                        converted_mlp=self.converted_mlp,
-                        oa_vecs=self.oa_vecs,
-                        dataloader=self.dataloader,
-                        all_primitives=self.all_primitives,
-                        metrics_logger=self.metrics_logger,
-                        logger=self.logger
-                    )
-                    search_output: PrimitiveSearchOutput = search_engine.search(path, layer, data_collector_output.mlp_inputs, data_collector_output.mlp_outputs)
-                    self.logger.info(f"Best Primitive: {search_output.best_primitive.name} | Accuracy: {search_output.best_accuracy:.2f}")
-                    
-                    failed = search_output.best_accuracy < self.config.failure_threshold
-                    self.metrics_logger.log(
-                        task='primitive_search',
-                        path=path,
-                        failed=failed,
-                        best_primitive=search_output.best_primitive.name,
-                        best_primitive_accuracy=search_output.best_accuracy
-                    )
-                    
-                    if failed:
-                        self.logger.info(f"Unable to convert MLP: Low Accuracy ({search_output.best_accuracy:.2f})")
-                    else:
-                        self.converted_mlp[path] = search_output
-                    
-                    curr_path += 1
+                    self._collect_and_search(layer, path)
+                
+                else:
+                    # For every input to the current layer's MLP...
+                    for mlp_inp in config[layer]["mlp"]:
+                        # Identify the relevant path
+                        path = f"mlp-{layer}-{mlp_inp}"
+                        self.logger.info(f"Converting: {path}")
+                        
+                        # Keep track of primitive replacement progress
+                        self.metrics_logger.log(
+                            task='primitive_replacement',
+                            path_idx = curr_path + 1,
+                            total_paths = num_paths
+                        )
+                        
+                        # Collect and search
+                        dependency = self._collect_and_search(layer, path, mlp_inp)
+                        if dependency:
+                            self.logger.warning(f"MLP in {path} could not be replaced due to an input dependency with an unconverted MLP")
+                        
+                        curr_path += 1
             
             # 3. Save the converted model
             torch.save(self.converted_mlp, self.config.full_output_dir / "converted_mlp.pt")
@@ -214,17 +296,20 @@ class MLPPrimitivePipeline:
         )
         
         lens_unembed_paths, lens_qk_paths = self._find_paths_to_inspect()
-        is_singlesource_mlp = hasattr(self.oa_vecs, "mlps")
         cached_data = {}
         
         # Inspect the output paths
         for unexplained_path in lens_unembed_paths:
-            inp_cache, out_cache = lens.inspect_mlp_logits(unexplained_path)
+            if self.single_input_mlps:
+                inp_cache, out_cache = lens.inspect_mlp_logits(unexplained_path)
+            else:
+                inp_cache, out_cache = lens.inspect_multi_mlp_logits(unexplained_path)
+            
             cached_data[unexplained_path] = (inp_cache, out_cache)
 
         # Inspect the QK paths
         for path_info in lens_qk_paths:
-            if not is_singlesource_mlp:
+            if not self.single_input_mlps:
                 #TODO: see if we can implement this once the full pipeline is working
                 self.logger.warning("Multi-source MLP LogitLens in QK not yet implemented. Skipping...")
                 break

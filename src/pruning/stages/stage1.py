@@ -15,7 +15,7 @@ from pruning.core.hooks import GPT2ComponentHooks
 from pruning.core.OptimalAblationVectors import OptimalAblationVectors
 from pruning.core.mask_samplers import ComponentMaskSampler
 from pruning.stages.base import PruningStage
-from pruning.utilities.metrics_logger import MetricsLogger
+from utilities.metrics_logger import MetricsLogger
 
 class CausalPruningStage1(PruningStage):
     def __init__(

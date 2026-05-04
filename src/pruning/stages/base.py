@@ -13,10 +13,10 @@ from transformers import GPT2LMHeadModel
 from typing import Any, Dict, List
 
 from data.CustomCollator import CustomCollator
-from pruning.tasks.registry import get_task
+from tasks.registry import get_task
 from pruning.utilities.pruning_dataclasses import PruningRunConfig, StageConfig
-from pruning.utilities.pruning_utils import int_key_hook
-from pruning.utilities.metrics_logger import MetricsLogger
+from utilities.core import int_key_hook
+from utilities.metrics_logger import MetricsLogger
 
 class PruningStage(ABC):
     """
@@ -381,7 +381,6 @@ class PruningStage(ABC):
         model_dir = self.config.full_output_dir / f'stage{self.stage_idx + 1}' / 'pruned_model'
         model_dir.mkdir(exist_ok=True)
         
-        #TODO: this is wrong, we should be saving the pruned model not the original one!!
         self.model.save_pretrained(model_dir)
     
     @abstractmethod

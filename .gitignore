@@ -206,5 +206,12 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Ignore .DS_Store files
+.DS_Store
+
 # Ignore the output directory
-src/pruning/out/*
+src/out/*
+
+# Ignore agent stuff
+GEMINI.md
+AGENTS.md

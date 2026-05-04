@@ -14,8 +14,7 @@ from pruning.core.hooks import GPT2FullPathHooks
 from pruning.core.OptimalAblationVectors import OptimalAblationVectors
 from pruning.core.mask_samplers import FullPathsMaskSampler
 from pruning.stages.base import PruningStage
-from pruning.utilities.pruning_utils import int_key_hook
-from pruning.utilities.metrics_logger import MetricsLogger
+from utilities.metrics_logger import MetricsLogger
 
 class CausalPruningStage2(PruningStage):
     
@@ -177,7 +176,7 @@ class CausalPruningStage2(PruningStage):
         num_pretrain_steps = 500
         log_interval = 50
         batch_size = 64
-        mini_batch_size = 16  #TODO: maybe we want to add a config key for this
+        mini_batch_size = 16
         accumulation_steps = batch_size // mini_batch_size if mini_batch_size > 0 else 0
         
         # Disable gradients, define optimizers and dataloader

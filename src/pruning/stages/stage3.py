@@ -16,7 +16,7 @@ from pruning.core.hooks import GPT2QKHooks
 from pruning.core.OptimalAblationVectors import OptimalQueryBiasVectors
 from pruning.core.mask_samplers import QKMaskSampler
 from pruning.stages.base import PruningStage
-from pruning.utilities.metrics_logger import MetricsLogger
+from utilities.metrics_logger import MetricsLogger
 
 class CausalPruningStage3(PruningStage):
     
@@ -99,7 +99,7 @@ class CausalPruningStage3(PruningStage):
         num_pretrain_steps = 500
         log_interval = 50
         batch_size = 64
-        mini_batch_size = 16  #TODO: maybe we want to add a config key for this
+        mini_batch_size = 16
         accumulation_steps = batch_size // mini_batch_size if mini_batch_size > 0 else 0
         
         # Disable gradients, define optimizers and dataloader
@@ -305,6 +305,9 @@ class CausalPruningStage3(PruningStage):
                                 self.model_config[k1][k2] = []
                                 self.logger.info(f"{node} is removed")
         
+        # Save new config
+        self.output_dict['result_patching_config_global_iteration_2'] = deepcopy(self.model_config)
+
     def run(self):
         """
         Convenience method to execute stage 3 pruning. This includes...

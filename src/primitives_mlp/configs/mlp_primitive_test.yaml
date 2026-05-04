@@ -1,0 +1,61 @@
+seed: 0
+device: mps
+exp_name: prune_test
+model_path: 'models/count-%2l4h256d4lr01drop'
+output_dir: 'src/out'
+
+skip_convert: False
+skip_vis: False
+do_test: False
+batch_size: 128
+success_threshold: 0.92
+failure_threshold: 0.9
+
+# MLP Primitives
+mlp_primitives:
+  - type: noop
+
+  # Sharpen primitives
+  - type: sharpen
+    pow: 2
+  - type: sharpen
+    pow: 3
+  - type: sharpen
+    pow: 5
+  
+  - type: harden
+  - type: erase
+
+  # 01-balance primitives
+  - type: zeroone
+    pow: 0.5
+    center: 0
+  - type: zeroone
+    pow: 0.05
+    center: 0
+  - type: zeroone
+    pow: 0.01
+    center: 0
+  
+  # Forall primitives
+  - type: forall
+    threshold: 0.95
+  - type: forall
+    threshold: 0.9
+  - type: forall
+    threshold: 0.85
+  - type: forall
+    threshold: 0.8
+  - type: forall
+    threshold: 0.75
+  - type: forall
+    threshold: 0.7
+  
+  - type: exists
+  - type: equal
+
+task_config:
+  name: counting
+  train_length_range: [0, 150]
+  val_length_range: [0, 150]
+  max_test_length: 150

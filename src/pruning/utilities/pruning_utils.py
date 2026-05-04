@@ -9,7 +9,8 @@ from typing import Any, Dict, List
 from pathlib import Path
 from transformers import GPT2LMHeadModel
 from dacite import from_dict
-from .pruning_dataclasses import PruningRunConfig, StageConfig, TaskConfig
+from .pruning_dataclasses import PruningRunConfig, StageConfig
+from utilities.core import TaskConfig
 
 def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
@@ -54,9 +55,6 @@ def output_model_arch_json(
         
     with open(out_dir / "model_config.json", "w") as f:
         json.dump(layer_configs, f, indent=4)
-
-def int_key_hook(d):
-    return {int(k) if k.isdigit() else k: v for k, v in d.items()}
 
 def get_full_possible_config_for_pruning(num_heads_per_layer: List[int]) -> Dict[str, List[Any]]:
     """

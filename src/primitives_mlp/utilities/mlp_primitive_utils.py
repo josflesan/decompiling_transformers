@@ -1,8 +1,3 @@
-'''
-- RegressionSolver: Utility Module to perform linear mapping recovery. This uses the activation
-tensors v and w and returns C using torch.linalg.pinv
-'''
-
 import torch
 import torch.nn.functional as F
 import random

@@ -22,7 +22,6 @@ MAX_LOGIT_OPTIONS = 60
 MAX_TICK_LABELS = 24
 
 #TODO: add column labels so the plots are more useful
-#TODO: make the heatmaps interactive so users can select the kth most important vector if needed
 
 @st.cache_resource(ttl=2)
 def load_mlp_heatmap_cache(mlp_file: str):

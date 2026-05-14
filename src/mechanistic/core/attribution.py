@@ -10,17 +10,6 @@ from mechanistic.utilities.mechinterp_viz import line, imshow
 
 SUBFOLDER = 'attribution'
 
-
-def _attribution_output_dir(exp_name: str, artifact_subdir: str | None) -> Path:
-    """Directory for saved HTML; optional subfolder (e.g. corruption name) keeps runs separate."""
-    base = get_output_path(exp_name, SUBFOLDER)
-    if artifact_subdir:
-        out = base / artifact_subdir
-        out.mkdir(exist_ok=True, parents=True)
-        return out
-    return base
-
-
 def residual_stream_attribution(
     model: TransformerBridge,
     tokens: Float[Tensor, "..."],
@@ -69,7 +58,7 @@ def residual_stream_attribution(
         margin=dict(l=48, r=28, t=52, b=44),
     )
     if save_html:
-        output_path = _attribution_output_dir(exp_name, artifact_subdir)
+        output_path = get_output_path(exp_name, SUBFOLDER, artifact_subdir)
         fig.write_html(
             output_path / "residual_stream_attribution.html",
             config={"responsive": True},
@@ -112,7 +101,7 @@ def layerwise_attribution(
         margin=dict(l=48, r=28, t=52, b=44),
     )
     if save_html:
-        output_path = _attribution_output_dir(exp_name, artifact_subdir)
+        output_path = get_output_path(exp_name, SUBFOLDER, artifact_subdir)
         fig.write_html(
             output_path / "residual_stream_component_attribution.html",
             config={"responsive": True},
@@ -157,7 +146,7 @@ def attention_head_attribution(
         margin=dict(l=48, r=56, t=52, b=44),
     )
     if save_html:
-        output_path = _attribution_output_dir(exp_name, artifact_subdir)
+        output_path = get_output_path(exp_name, SUBFOLDER, artifact_subdir)
         fig.write_html(
             output_path / "attention_head_attribution.html",
             config={"responsive": True},

@@ -1,0 +1,13 @@
+seed: 0
+device: mps
+exp_name: prune_test
+output_dir: 'src/out'
+model_path: 'models/count-%2l4h256d4lr01drop'
+
+batch_size: 128
+
+task_config:
+  name: counting
+  train_length_range: [50, 150]
+  val_length_range: [50, 150]
+  max_test_length: 150

@@ -1,0 +1,1 @@
+Samples short prefixes `<bos> start end <sep>` where `end` is shared but the **start** digit differs between a *clean* and *corrupt* prompt. The purpose of this corruption is to understand which parts of the network are responsible for copying the start token onto the first predicted position (after `<sep>`).

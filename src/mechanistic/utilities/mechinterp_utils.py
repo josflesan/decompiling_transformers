@@ -9,9 +9,9 @@ import yaml
 from typing import Tuple
 from jaxtyping import Float, Int
 from torch import Tensor
-from transformer_lens import ActivationCache, utils
+from transformer_lens import ActivationCache, HookedTransformer, utils
 
-from utilities.core import TaskConfig
+from data.utils import CleanCorruptData
 
 def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
@@ -30,6 +30,20 @@ def mlp_out(layer: int) -> str:
 
 def resid_post(layer: int) -> str:
     return f"blocks.{layer}.hook_resid_post"
+
+def get_clean_cache(model: HookedTransformer, clean_corrupt_data: CleanCorruptData):
+    clean_tokens = clean_corrupt_data.clean_tokens
+    clean_pos = clean_corrupt_data.clean_pos
+    _, cache = model.run_with_cache(
+        clean_tokens.to(model.cfg.device),
+        position_ids=clean_pos.to(model.cfg.device),
+        return_type=None
+    )
+    return cache
+
+def mean_attn_pattern(cache: ActivationCache, layer: int, head: int):
+    """Average attention pattern over the batch dimension"""
+    return cache["pattern", layer][:, head].mean(0)
 
 def residual_stack_to_logit(
     residual_stack: Float[Tensor, "... batch d_model"],

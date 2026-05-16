@@ -40,6 +40,19 @@ def logit_diff_metric(
     patched_logit_diff = get_logit_diff(logits, answer_tokens)
     return (patched_logit_diff - corrupted_logit_diff) / (clean_logit_diff - corrupted_logit_diff)
 
+def ablation_metric(ablated_logits, clean_logits, answer_tokens, **kwargs) -> Float[Tensor, "..."]:
+    """
+    Linear function of logit diff, calibrated so that it equals 0 when performance is completely
+    degraded and 1 when performance is relatively unaffected. This is used for ablation experiments.
+    
+    Negative results suggest the component was critical for performance, causing the model to prefer
+    the wrong token when ablated.
+    """
+    ablated_logit_diff = get_logit_diff(ablated_logits, answer_tokens)
+    clean_logit_diff = get_logit_diff(clean_logits, answer_tokens)
+    
+    return ablated_logit_diff / clean_logit_diff
+
 
 # def logsoftmax(logits: torch.Tensor, target_ids: torch.Tensor, position: int) -> float:
 #     """Log probability of target token at position"""

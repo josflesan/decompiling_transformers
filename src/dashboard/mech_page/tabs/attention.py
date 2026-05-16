@@ -20,6 +20,7 @@ from mech_page.common import (
     per_head_plot_paths,
     per_head_plots_complete,
     repo_root,
+    resolve_model_dims,
     run_per_head_inspections,
     safe_display_path,
     save_html_content,
@@ -86,8 +87,9 @@ def render_attention_tab(ctx: MechPageContext) -> None:
     )
 
     counting_ok = ctx.task_cfg.name == "counting"
-    layer_max = max(0, int(ctx.raw_config.get("n_layers", 8)) - 1) if ctx.raw_config else 7
-    head_max = max(0, int(ctx.raw_config.get("n_heads", 8)) - 1) if ctx.raw_config else 7
+    n_layers, n_heads = resolve_model_dims(str(ctx.model_path), ctx.device, ctx.compat)
+    layer_max = max(0, n_layers - 1)
+    head_max = max(0, n_heads - 1)
 
     st.markdown("#### All attention patterns")
     run_all_patterns = st.button(

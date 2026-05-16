@@ -128,6 +128,42 @@ def plot_path_patching_per_sender(
     
     return fig
 
+def plot_path_patching_matrix(
+    results: Dict[str, Dict[str, float]],
+    *,
+    title: str = "Path Patching",
+    percent: bool = True,
+) -> go.Figure:
+    """Sender × receiver heatmap for arbitrary path-patching node sets."""
+    if not results:
+        raise ValueError("path patching results are empty")
+
+    senders = list(results.keys())
+    receivers = list(results[senders[0]].keys())
+    mat = torch.zeros(len(senders), len(receivers))
+    for i, sender in enumerate(senders):
+        for j, receiver in enumerate(receivers):
+            score = results[sender][receiver]
+            if hasattr(score, "detach"):
+                score = score.detach()
+            mat[i, j] = float(score)
+
+    if percent:
+        mat = 100 * mat
+
+    fig = px.imshow(
+        mat,
+        labels=dict(x="Receiver", y="Sender", color="Effect (%)"),
+        x=receivers,
+        y=senders,
+        color_continuous_scale="RdBu",
+        color_continuous_midpoint=0.0,
+        aspect="auto",
+    )
+    fig.update_layout(title=title)
+    return fig
+
+
 def plot_path_patching_aggregated(
     results: Dict[str, float],
     receiver_nodes: Dict[str, CircuitNode],

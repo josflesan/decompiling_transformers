@@ -17,6 +17,8 @@ from mechanistic.core.attention_inspection import (
     inspect_qk_circuit,
     plot_positional_attention,
 )
+from mechanistic.utilities.mechinterp_dataclasses import CircuitNode
+from mechanistic.utilities.mechinterp_utils import attn_v, attn_z, mlp_out, resid_post
 from tasks.registry import get_task
 from transformer_lens.model_bridge import TransformerBridge
 from utilities.core import TaskConfig
@@ -433,6 +435,56 @@ def run_per_head_inspections(
             saved_names.append(paths["positional_attention"].name)
 
     return saved_names
+
+
+def resolve_model_dims(model_path: str, device: str, compatibility_mode: bool) -> tuple[int, int]:
+    """Layer/head counts from the run's loaded TransformerBridge (not YAML defaults)."""
+    model = load_transformer_bridge(model_path, device, compatibility_mode)
+    return int(model.cfg.n_layers), int(model.cfg.n_heads)
+
+
+def build_circuit_node_catalog(n_layers: int, n_heads: int) -> dict[str, CircuitNode]:
+    """All standard hook sites for path patching, keyed by human-readable labels."""
+    catalog: dict[str, CircuitNode] = {}
+    for layer in range(n_layers):
+        for head in range(n_heads):
+            catalog[f"attn_z L{layer} H{head}"] = CircuitNode(
+                name=attn_z(layer), layer_idx=layer, head_idx=head
+            )
+            catalog[f"attn_v L{layer} H{head}"] = CircuitNode(
+                name=attn_v(layer), layer_idx=layer, head_idx=head
+            )
+        catalog[f"mlp_out L{layer}"] = CircuitNode(name=mlp_out(layer), layer_idx=layer)
+        catalog[f"resid_post L{layer}"] = CircuitNode(name=resid_post(layer), layer_idx=layer)
+    return catalog
+
+
+def render_circuit_node_checkboxes(
+    catalog: dict[str, CircuitNode],
+    *,
+    role: str,
+    run_name: str,
+    corruption: str,
+) -> dict[str, CircuitNode]:
+    """Checkboxes grouped by layer inside an expander (sender or receiver selection)."""
+    layers = sorted({node.layer_idx for node in catalog.values() if node.layer_idx is not None})
+    selected: dict[str, CircuitNode] = {}
+
+    with st.expander(f"Select {role} nodes", expanded=False):
+        for layer in layers:
+            layer_keys = [k for k, n in catalog.items() if n.layer_idx == layer]
+            if not layer_keys:
+                continue
+            st.markdown(f"**Layer {layer}**")
+            cols = st.columns(4)
+            for i, key in enumerate(layer_keys):
+                with cols[i % 4]:
+                    if st.checkbox(
+                        key,
+                        key=f"mech_path_{role}_{run_name}_{corruption}_{key}",
+                    ):
+                        selected[key] = catalog[key]
+    return selected
 
 
 def load_counting_corrupt_batch(

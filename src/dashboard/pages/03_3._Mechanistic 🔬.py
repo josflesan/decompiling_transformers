@@ -26,6 +26,7 @@ from mech_page.tabs import (  # noqa: E402
     render_activation_patching_tab,
     render_attribution_tab,
     render_attention_tab,
+    render_path_patching_tab,
 )
 from utils.constants import PRUNING_EXPERIMENT_DIR  # noqa: E402
 
@@ -105,8 +106,13 @@ ctx = MechPageContext(
     compat=compat,
 )
 
-tab_attr, tab_attention, tab_patch = st.tabs(
-    ["Attribution Analysis", "Attention Analysis", "Activation Patching"]
+tab_attr, tab_attention, tab_patch, tab_path = st.tabs(
+    [
+        "Attribution Analysis",
+        "Attention Analysis",
+        "Activation Patching",
+        "Path Patching",
+    ]
 )
 
 with tab_attr:
@@ -117,3 +123,6 @@ with tab_attention:
 
 with tab_patch:
     render_activation_patching_tab(ctx)
+
+with tab_path:
+    render_path_patching_tab(ctx)

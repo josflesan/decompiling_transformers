@@ -125,8 +125,10 @@ def plot_all_attention_patterns(
     
     fig.update_layout(
         title="Mean Attention Patterns - All Heads",
-        height=280 * n_layers,
-        width=280 * n_heads
+        autosize=True,
+        height=88 * n_layers + 52,
+        width=None,
+        margin=dict(l=16, r=16, t=48, b=16),
     )
     
     return fig
@@ -435,8 +437,10 @@ def plot_head_classification_heatmap(
     
     fig.update_layout(
         title="Head Type Scores - All Heads",
-        height = 300,
-        width = 280 * len(archetypes),
+        height=220,
+        width=None,
+        autosize=True,
+        margin=dict(l=16, r=16, t=48, b=16),
     )
     
     return fig

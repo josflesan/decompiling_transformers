@@ -22,7 +22,11 @@ from mech_page.common import (  # noqa: E402
     task_sidebar_markdown,
 )
 from mech_page.context import MechPageContext  # noqa: E402
-from mech_page.tabs import render_attribution_tab, render_attention_tab  # noqa: E402
+from mech_page.tabs import (  # noqa: E402
+    render_activation_patching_tab,
+    render_attribution_tab,
+    render_attention_tab,
+)
 from utils.constants import PRUNING_EXPERIMENT_DIR  # noqa: E402
 
 st.set_page_config(layout="wide")
@@ -101,10 +105,15 @@ ctx = MechPageContext(
     compat=compat,
 )
 
-tab_attr, tab_attention = st.tabs(["Attribution Analysis", "Attention Analysis"])
+tab_attr, tab_attention, tab_patch = st.tabs(
+    ["Attribution Analysis", "Attention Analysis", "Activation Patching"]
+)
 
 with tab_attr:
     render_attribution_tab(ctx)
 
 with tab_attention:
     render_attention_tab(ctx)
+
+with tab_patch:
+    render_activation_patching_tab(ctx)

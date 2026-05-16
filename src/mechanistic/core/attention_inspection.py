@@ -84,7 +84,7 @@ def plot_all_attention_patterns(
     model: HookedTransformer,
     tokenizer: CustomTokenizer,
     clean_corrupt_data: CleanCorruptData,
-):
+) -> go.Figure:
     cache = get_clean_cache(model, clean_corrupt_data)
     clean_tokens = clean_corrupt_data.clean_tokens
     
@@ -95,42 +95,63 @@ def plot_all_attention_patterns(
     safe_tokens = tokenizer.convert_ids_to_tokens(clean_tokens[0])
     safe_tokens[0] = "BOS"
     safe_tokens[3] = "SEP"
-    
+    positions = list(range(seq_len))
+
     fig = make_subplots(
         rows=n_layers,
         cols=n_heads,
         subplot_titles=[
             f"L{l}H{h}" for l in range(n_layers) for h in range(n_heads)
         ],
-        shared_xaxes=True,
-        shared_yaxes=True
+        horizontal_spacing=0.04,
+        vertical_spacing=0.06,
     )
-    
+
     for layer in range(n_layers):
         for head in range(n_heads):
             pattern = mean_attn_pattern(cache, layer, head).cpu().numpy()
             fig.add_trace(
                 go.Heatmap(
                     z=pattern,
-                    x=safe_tokens,
-                    y=safe_tokens,
+                    x=positions,
+                    y=positions,
                     colorscale="Blues",
-                    showscale=(layer==0 and head==n_heads - 1),
+                    showscale=(layer == 0 and head == n_heads - 1),
                     zmin=0,
-                    zmax=1
+                    zmax=1,
                 ),
                 row=layer + 1,
-                col=head + 1
+                col=head + 1,
             )
-    
+            if layer == n_layers - 1:
+                fig.update_xaxes(
+                    tickmode="array",
+                    tickvals=positions,
+                    ticktext=safe_tokens,
+                    row=layer + 1,
+                    col=head + 1,
+                )
+            if head == 0:
+                fig.update_yaxes(
+                    tickmode="array",
+                    tickvals=positions,
+                    ticktext=safe_tokens,
+                    row=layer + 1,
+                    col=head + 1,
+                )
+
+    cell_px = 72
     fig.update_layout(
         title="Mean Attention Patterns - All Heads",
-        autosize=True,
-        height=88 * n_layers + 52,
-        width=None,
+        template="plotly_white",
+        height=cell_px * n_layers + 80,
+        width=cell_px * n_heads + 100,
+        autosize=False,
         margin=dict(l=16, r=16, t=48, b=16),
     )
-    
+    fig.for_each_xaxis(lambda ax: ax.update(matches=None))
+    fig.for_each_yaxis(lambda ax: ax.update(matches=None, autorange="reversed"))
+
     return fig
 
 

@@ -19,7 +19,6 @@ from mech_page.common import (
     load_counting_corrupt_batch,
     per_head_plot_paths,
     per_head_plots_complete,
-    prepare_fig_for_streamlit,
     repo_root,
     run_per_head_inspections,
     safe_display_path,
@@ -33,7 +32,6 @@ ATTENTION_INSPECTION_SUBFOLDER = "attention_inspection"
 TOPK_ATTENTION_HTML_LEGACY = "topk_attention_heads.html"
 ALL_ATTENTION_PATTERNS_HTML = "all_attention_patterns.html"
 HEAD_CLASSIFICATION_HTML = "head_classification_heatmap.html"
-ALL_PATTERNS_CELL_PX = 88
 CLASSIFY_FIG_HEIGHT = 220
 
 
@@ -91,75 +89,6 @@ def render_attention_tab(ctx: MechPageContext) -> None:
     layer_max = max(0, int(ctx.raw_config.get("n_layers", 8)) - 1) if ctx.raw_config else 7
     head_max = max(0, int(ctx.raw_config.get("n_heads", 8)) - 1) if ctx.raw_config else 7
 
-    st.markdown("#### Top-K attention heads (activation patching)")
-    st.caption(
-        "Ranks heads by activation-patching score on the pattern view, then plots mean attention "
-        "patterns for the top-k heads (CircuitsVis)."
-    )
-    tk1, tk2, tk3 = st.columns(3)
-    with tk1:
-        topk_k = st.number_input("k", min_value=1, max_value=16, value=4, key=f"mech_topk_k_{ctx.run_name}")
-    with tk2:
-        topk_view = st.number_input(
-            "Patching view index",
-            min_value=0,
-            max_value=4,
-            value=3,
-            help="Facet index from activation patching (3 = attention pattern).",
-            key=f"mech_topk_view_{ctx.run_name}",
-        )
-    with tk3:
-        run_topk = st.button(
-            "Run top-k inspection",
-            type="primary",
-            disabled=not counting_ok,
-            key=f"mech_run_topk_{ctx.run_name}",
-        )
-
-    topk_html_name = _topk_attention_html_filename(int(topk_k), int(topk_view))
-    topk_show_key = attention_state_key(ctx.run_name, ctx.corruption.name, f"topk_k{topk_k}_v{topk_view}")
-
-    fig_topk = None
-    if run_topk and counting_ok:
-        with st.spinner("Running top-k attention head inspection…"):
-            try:
-                model, tokenizer, corrupted = load_counting_corrupt_batch(
-                    ctx.task_cfg,
-                    ctx.corruption,
-                    batch_size,
-                    ctx.device,
-                    ctx.compat,
-                    str(ctx.model_path),
-                )
-                fig_topk = investigate_topk_attention_heads(
-                    model=model,
-                    tokenizer=tokenizer,
-                    clean_corrupt_data=corrupted,
-                    metric=logit_diff_metric,
-                    k=int(topk_k),
-                    view=int(topk_view),
-                )
-                if fig_topk is not None:
-                    html_body = fig_topk._repr_html_()
-                    st.session_state[attention_body_key(topk_show_key)] = html_body
-                    if save_html_attn:
-                        save_html_content(html_body, artifact_dir / topk_html_name)
-                        st.success(f"Saved `{topk_html_name}`.")
-            except Exception as e:
-                st.exception(e)
-
-    display_inspection_block(
-        f"Top-K Attention Heads (k={topk_k}, view={topk_view})",
-        topk_html_name,
-        artifact_dir,
-        fig_topk,
-        use_plotly=False,
-        html_embed_height=_circuitsvis_embed_height(int(topk_k)),
-        legacy_html_filenames=(TOPK_ATTENTION_HTML_LEGACY,),
-        session_show_key=topk_show_key,
-    )
-
-    st.divider()
     st.markdown("#### All attention patterns")
     run_all_patterns = st.button(
         "Plot all attention patterns",
@@ -183,32 +112,26 @@ def render_attention_tab(ctx: MechPageContext) -> None:
                 )
                 fig_all_patterns = plot_all_attention_patterns(model, tokenizer, corrupted)
                 if fig_all_patterns is not None:
-                    prepare_fig_for_streamlit(
-                        fig_all_patterns,
-                        subplot_cell_px=ALL_PATTERNS_CELL_PX,
-                        n_subplot_rows=model.cfg.n_layers,
-                    )
                     st.session_state[attention_body_key(all_patterns_show_key)] = (
                         fig_all_patterns.to_json()
                     )
                 if save_html_attn and fig_all_patterns is not None:
-                    save_plotly_figure(fig_all_patterns, artifact_dir / ALL_ATTENTION_PATTERNS_HTML)
+                    save_plotly_figure(
+                        fig_all_patterns,
+                        artifact_dir / ALL_ATTENTION_PATTERNS_HTML,
+                    )
                     st.success(f"Saved `{ALL_ATTENTION_PATTERNS_HTML}`.")
             except Exception as e:
                 st.exception(e)
 
-    all_patterns_height = ALL_PATTERNS_CELL_PX * (layer_max + 1) + 52
     display_inspection_block(
         "All Attention Patterns",
         ALL_ATTENTION_PATTERNS_HTML,
         artifact_dir,
         fig_all_patterns,
-        subplot_cell_px=ALL_PATTERNS_CELL_PX,
-        n_subplot_rows=layer_max + 1,
-        html_embed_height=all_patterns_height,
         session_show_key=all_patterns_show_key,
     )
-
+    
     st.divider()
     st.markdown("#### Per-head circuit and positional plots")
     st.caption(
@@ -363,6 +286,75 @@ def render_attention_tab(ctx: MechPageContext) -> None:
         html_embed_height=CLASSIFY_FIG_HEIGHT + 40,
         session_show_key=classify_show_key,
     )
+    
+    st.divider()
+    st.markdown("#### Top-K attention heads (activation patching)")
+    st.caption(
+        "Ranks heads by activation-patching score on the pattern view, then plots mean attention "
+        "patterns for the top-k heads (CircuitsVis)."
+    )
+    tk1, tk2, tk3 = st.columns(3)
+    with tk1:
+        topk_k = st.number_input("k", min_value=1, max_value=16, value=4, key=f"mech_topk_k_{ctx.run_name}")
+    with tk2:
+        topk_view = st.number_input(
+            "Patching view index",
+            min_value=0,
+            max_value=4,
+            value=3,
+            help="Facet index from activation patching (3 = attention pattern).",
+            key=f"mech_topk_view_{ctx.run_name}",
+        )
+    with tk3:
+        run_topk = st.button(
+            "Run top-k inspection",
+            type="primary",
+            disabled=not counting_ok,
+            key=f"mech_run_topk_{ctx.run_name}",
+        )
+
+    topk_html_name = _topk_attention_html_filename(int(topk_k), int(topk_view))
+    topk_show_key = attention_state_key(ctx.run_name, ctx.corruption.name, f"topk_k{topk_k}_v{topk_view}")
+
+    fig_topk = None
+    if run_topk and counting_ok:
+        with st.spinner("Running top-k attention head inspection…"):
+            try:
+                model, tokenizer, corrupted = load_counting_corrupt_batch(
+                    ctx.task_cfg,
+                    ctx.corruption,
+                    batch_size,
+                    ctx.device,
+                    ctx.compat,
+                    str(ctx.model_path),
+                )
+                fig_topk = investigate_topk_attention_heads(
+                    model=model,
+                    tokenizer=tokenizer,
+                    clean_corrupt_data=corrupted,
+                    metric=logit_diff_metric,
+                    k=int(topk_k),
+                    view=int(topk_view),
+                )
+                if fig_topk is not None:
+                    html_body = fig_topk._repr_html_()
+                    st.session_state[attention_body_key(topk_show_key)] = html_body
+                    if save_html_attn:
+                        save_html_content(html_body, artifact_dir / topk_html_name)
+                        st.success(f"Saved `{topk_html_name}`.")
+            except Exception as e:
+                st.exception(e)
+
+    display_inspection_block(
+        f"Top-K Attention Heads (k={topk_k}, view={topk_view})",
+        topk_html_name,
+        artifact_dir,
+        fig_topk,
+        use_plotly=False,
+        html_embed_height=_circuitsvis_embed_height(int(topk_k)),
+        legacy_html_filenames=(TOPK_ATTENTION_HTML_LEGACY,),
+        session_show_key=topk_show_key,
+    )
 
     saved_attn_plots = list(artifact_dir.glob("*.html")) if artifact_dir.is_dir() else []
     if saved_attn_plots:
@@ -388,7 +380,8 @@ def render_attention_tab(ctx: MechPageContext) -> None:
         if st.button("Save interpretation", key=f"mech_save_attn_manual_{ctx.run_name}_{ctx.corruption.name}"):
             notes_path.write_text(st.session_state[notes_key], encoding="utf-8")
             st.success(f"Saved to `{safe_display_path(notes_path)}`.")
-
+    
+    
     st.caption(
         "Clean/corrupt batches match the attribution tab. Per-head filenames include layer and head "
         f"(e.g. `{layer_head_html('ov_circuit', 0, 0)}`)."

@@ -148,8 +148,43 @@ def wrap_iframe_html(fragment: str) -> str:
     )
 
 
-def embed_html_snippet(html: str, *, height: int) -> None:
-    components.html(wrap_iframe_html(html), height=height, scrolling=False)
+def embed_html_snippet(html: str, *, height: int, scrolling: bool = False) -> None:
+    components.html(wrap_iframe_html(html), height=height, scrolling=scrolling)
+
+
+def plotly_fig_embed_html(fig) -> str:
+    """Self-contained Plotly HTML for iframe embed (avoids st.plotly_chart subplot layout issues)."""
+    return pio.to_html(
+        fig,
+        full_html=True,
+        include_plotlyjs="cdn",
+        config={"responsive": True, "displayModeBar": True},
+    )
+
+
+def streamlit_plotly_chart(fig, *, key: str) -> None:
+    """Render a Plotly figure with layout height respected (tall subplot grids)."""
+    fig.update_layout(template="plotly_white")
+    layout_height = fig.layout.height
+    try:
+        if layout_height is not None:
+            st.plotly_chart(
+                fig,
+                width="stretch",
+                height=int(layout_height),
+                theme=None,
+                key=key,
+            )
+        else:
+            st.plotly_chart(
+                fig,
+                width="stretch",
+                height="content",
+                theme=None,
+                key=key,
+            )
+    except TypeError:
+        st.plotly_chart(fig, use_container_width=True, theme=None, key=key)
 
 
 def prepare_fig_for_streamlit(
@@ -196,7 +231,7 @@ def display_attribution_block(
 
     if fig is not None:
         prepare_fig_for_streamlit(fig)
-        st.plotly_chart(fig, use_container_width=True)
+        streamlit_plotly_chart(fig, key=f"{title}_{html_filename}_live")
     else:
         embed_html_file(html_path, height=embed_height)
 
@@ -205,8 +240,12 @@ def layer_head_html(prefix: str, layer: int, head: int) -> str:
     return f"{prefix}_L{layer}H{head}.html"
 
 
-def save_plotly_figure(fig, path: Path) -> None:
-    prepare_fig_for_streamlit(fig)
+def save_plotly_figure(fig, path: Path, *, for_streamlit: bool = True) -> None:
+    fig.update_layout(template="plotly_white")
+    fig.for_each_xaxis(lambda ax: ax.update(matches=None))
+    fig.for_each_yaxis(lambda ax: ax.update(matches=None))
+    if for_streamlit:
+        prepare_fig_for_streamlit(fig)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.write_json(path.with_suffix(".json"))
     fig.write_html(path, config={"responsive": True})
@@ -255,6 +294,7 @@ def display_inspection_block(
     subplot_cell_px: int | None = None,
     n_subplot_rows: int | None = None,
     html_embed_height: int = 480,
+    html_embed_scrolling: bool = False,
     legacy_html_filenames: tuple[str, ...] = (),
     session_show_key: str | None = None,
 ) -> None:
@@ -272,7 +312,13 @@ def display_inspection_block(
 
     session_html = None
     if fig is None and session_body and not use_plotly:
-        session_html = session_body
+        if str(session_body).lstrip().startswith("{"):
+            try:
+                fig = pio.from_json(session_body)
+            except (ValueError, TypeError):
+                pass
+        else:
+            session_html = session_body
     elif fig is None and session_body and use_plotly and str(session_body).lstrip().startswith("{"):
         try:
             fig = pio.from_json(session_body)
@@ -295,10 +341,13 @@ def display_inspection_block(
                 subplot_cell_px=subplot_cell_px,
                 n_subplot_rows=n_subplot_rows,
             )
-            st.plotly_chart(fig, use_container_width=True, key=f"{chart_key}_live")
+            streamlit_plotly_chart(fig, key=f"{chart_key}_live")
         else:
-            html = fig._repr_html_() if hasattr(fig, "_repr_html_") else str(fig)
-            embed_html_snippet(html, height=html_embed_height)
+            embed_html_snippet(
+                plotly_fig_embed_html(fig),
+                height=html_embed_height,
+                scrolling=html_embed_scrolling,
+            )
     elif fig is None and html_path is not None:
         if use_plotly:
             loaded = load_plotly_figure(html_path)
@@ -308,23 +357,25 @@ def display_inspection_block(
                     subplot_cell_px=subplot_cell_px,
                     n_subplot_rows=n_subplot_rows,
                 )
-                st.plotly_chart(
-                    loaded,
-                    use_container_width=True,
-                    key=f"{chart_key}_saved",
-                )
+                streamlit_plotly_chart(loaded, key=f"{chart_key}_saved")
             else:
                 embed_html_snippet(
                     html_path.read_text(encoding="utf-8"),
                     height=html_embed_height,
+                    scrolling=html_embed_scrolling,
                 )
         else:
             embed_html_snippet(
                 html_path.read_text(encoding="utf-8"),
                 height=html_embed_height,
+                scrolling=html_embed_scrolling,
             )
     elif session_html:
-        embed_html_snippet(session_html, height=html_embed_height)
+        embed_html_snippet(
+            session_html,
+            height=html_embed_height,
+            scrolling=html_embed_scrolling,
+        )
 
 
 PER_HEAD_PREFIXES = ("ov_circuit", "ov_eigenspectrum", "qk_circuit", "positional_attention")

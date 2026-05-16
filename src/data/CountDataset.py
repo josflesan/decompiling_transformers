@@ -9,7 +9,7 @@ from typing import Tuple, List, Optional
 from jaxtyping import Float
 
 from data.CustomTokenizer import CustomTokenizer
-from data.utils import CorruptedData
+from data.utils import CleanCorruptData
 
 @dataclass(frozen=True)
 class CountSample:
@@ -88,7 +88,7 @@ class CountDataset(IterableDataset):
         
         return tokens, position_ids
 
-    def get_corrupted(self, corruption: CountCorruption, batch_size=25) -> CorruptedData:        
+    def get_corrupted(self, corruption: CountCorruption, batch_size=25) -> CleanCorruptData:        
         corrupted_tokens = []
         corrupted_pos = []
         clean_tokens = []
@@ -129,7 +129,7 @@ class CountDataset(IterableDataset):
             corrupted_pos.append(corrupt_pos_tok.squeeze(0))
             answer_tokens.append(answer.squeeze(0))
         
-        return CorruptedData(
+        return CleanCorruptData(
             corrupted_tokens=torch.stack(corrupted_tokens),
             corrupted_pos=torch.stack(corrupted_pos),
             clean_tokens=torch.stack(clean_tokens),

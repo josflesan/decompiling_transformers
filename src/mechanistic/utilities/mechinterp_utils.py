@@ -5,7 +5,8 @@ import os
 import einops
 import yaml
 
-from dacite import from_dict
+
+from typing import Tuple
 from jaxtyping import Float, Int
 from torch import Tensor
 from transformer_lens import ActivationCache, utils
@@ -17,6 +18,18 @@ def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
+
+def attn_z(layer: int) -> str:
+    return f"blocks.{layer}.attn.o.hook_in"
+
+def attn_v(layer: int) -> str:
+    return f"blocks.{layer}.attn.hook_v"
+
+def mlp_out(layer: int) -> str:
+    return f"blocks.{layer}.mlp.hook_out"
+
+def resid_post(layer: int) -> str:
+    return f"blocks.{layer}.hook_resid_post"
 
 def residual_stack_to_logit(
     residual_stack: Float[Tensor, "... batch d_model"],

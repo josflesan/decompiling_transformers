@@ -2,17 +2,18 @@
 Visualization utilities borrowed from ARENA 3.0
 """
 
-import re
+import torch
 
-import einops
 import numpy as np
-import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import torch as t
-from jaxtyping import Float
+from transformer_lens import HookedTransformer
 from plotly.subplots import make_subplots
+from typing import Dict
 from torch import Tensor
+
+from mechanistic.utilities.mechinterp_dataclasses import CircuitNode
 
 update_layout_set = {
     "xaxis_range",
@@ -78,6 +79,106 @@ def to_numpy(tensor):
         return np.array(tensor)
     else:
         raise ValueError(f"Input to to_numpy has invalid type: {type(tensor)}")
+
+def plot_path_patching_per_sender(
+    results: Dict[str, float],
+    sender_nodes: Dict[str, CircuitNode],
+    model: HookedTransformer,
+    title: str="Path Patching Heatmap",
+    percent: bool=True
+):
+    """
+    Plot path patching results per sender node
+    """
+    
+    n_layers = model.cfg.n_layers
+    n_heads = model.cfg.n_heads
+    
+    mat = torch.full((n_layers, n_heads + 1), float('nan'))  # +1 column for MLP nodes
+    x_labels = [f"H{h}" for h in range(n_heads)] + ["MLP"]
+    
+    for sender_key, score in results.items():
+        node = sender_nodes[sender_key]
+        layer = int(sender_key.split(".")[1])
+        
+        if node.head_idx is not None:
+            mat[layer, node.head_idx] = score
+        else:
+            mat[layer, n_heads] = score  # MLP goes in last column
+    
+    # Plot the results
+    if percent:
+        mat = 100 * mat
+    
+    fig = px.imshow(
+        mat,
+        labels=dict(
+            x="Head / Node Index",
+            y="Layer",
+            color="Effect (%)"
+        ),
+        x=x_labels,
+        y=[f"L{l}" for l in range(n_layers)],
+        color_continuous_scale="RdBu",
+        color_continuous_midpoint=0.0,
+        aspect='auto'
+    )
+    
+    fig.update_layout(title=title)
+    
+    return fig
+
+def plot_path_patching_aggregated(
+    results: Dict[str, float],
+    receiver_nodes: Dict[str, CircuitNode],
+    model: HookedTransformer,
+    title: str="Path Patching Heatmap",
+    percent: bool=True
+):
+    """
+    Generic heatmap for path patching results
+    """
+    
+    n_layers = model.cfg.n_layers
+    n_heads = model.cfg.n_heads
+    
+    for sender, receiver_results in results.items():
+        detached = {k: v.detach() if hasattr(v, "detach") else v.numpy() for k, v in receiver_results.items()}
+        results[sender] = detached
+    
+    mat = torch.full((n_layers, n_heads + 1), float('nan'))  # +1 column for MLP nodes
+    x_labels = [f"H{h}" for h in range(n_heads)] + ["MLP"]
+    
+    for receiver_name, node in receiver_nodes.items():
+        scores = torch.tensor([
+            results[s][receiver_name] for s in results
+        ])
+        layer = node.layer_idx
+        col = node.head_idx if node.head_idx is not None else n_heads
+        mat[layer, col] = torch.mean(scores).item()
+    
+    # Plot the results
+    if percent:
+        mat = 100 * mat
+    
+    
+    fig = px.imshow(
+        mat,
+        labels=dict(
+            x="Head / Node Index",
+            y="Layer",
+            color="Effect (%)"
+        ),
+        x=x_labels,
+        y=[f"L{l}" for l in range(n_layers)],
+        color_continuous_scale="RdBu",
+        color_continuous_midpoint=0.0,
+        aspect='auto'
+    )
+    
+    fig.update_layout(title=title)
+    
+    return fig
 
 def line(y: Tensor | list, renderer=None, **kwargs):
     """

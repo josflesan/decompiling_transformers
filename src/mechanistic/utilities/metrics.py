@@ -25,6 +25,22 @@ def get_logit_diff(
     
     return torch.mean(logitDiff, axis=0)
 
+def logit_diff_metric(
+    logits: Float[Tensor, "batch seq d_vocab"],
+    answer_tokens: Int[Tensor, "batch 2"],
+    corrupted_logit_diff: float,
+    clean_logit_diff: float,
+) -> Float[Tensor, "..."]:
+    """
+    Linear function of logit diff, calibrated so that it equals 0 when performance is same as on
+    corrupted input, and 1 when performance is same as on clean input. This is used for activation
+    and path patching.
+    """
+    
+    patched_logit_diff = get_logit_diff(logits, answer_tokens)
+    return (patched_logit_diff - corrupted_logit_diff) / (clean_logit_diff - corrupted_logit_diff)
+
+
 # def logsoftmax(logits: torch.Tensor, target_ids: torch.Tensor, position: int) -> float:
 #     """Log probability of target token at position"""
 #     log_probs = F.log_softmax(logits[:, position, :], dim=-1)

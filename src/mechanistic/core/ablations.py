@@ -151,6 +151,9 @@ def ablate_circuit(
     
     hook_names = set(hook_name_to_nodes.keys())
     
+    if mean_cache is None:
+        mean_cache = compute_mean_cache(model, clean_tokens, clean_pos, hook_names)
+    
     def _multi_node_ablate(activation, hook, nodes, mode, mean_cache):
         for node in nodes:
             activation = _ablate_activation(activation, hook, node, mode, mean_cache)

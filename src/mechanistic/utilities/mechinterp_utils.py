@@ -20,16 +20,16 @@ def set_seed(seed: int) -> None:
     os.environ['PYTHONHASHSEED'] = str(seed)
 
 def attn_z(layer: int) -> str:
-    return f"blocks.{layer}.attn.o.hook_in"
+    return f"blocks.{layer}.attn.hook_out"
 
 def attn_v(layer: int) -> str:
-    return f"blocks.{layer}.attn.hook_v"
+    return f"blocks.{layer}.attn.v.hook_in"
 
 def mlp_out(layer: int) -> str:
     return f"blocks.{layer}.mlp.hook_out"
 
 def resid_post(layer: int) -> str:
-    return f"blocks.{layer}.hook_resid_post"
+    return f"blocks.{layer}.hook_out"
 
 def get_clean_cache(model: HookedTransformer, clean_corrupt_data: CleanCorruptData):
     clean_tokens = clean_corrupt_data.clean_tokens

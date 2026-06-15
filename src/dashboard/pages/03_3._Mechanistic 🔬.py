@@ -23,6 +23,7 @@ from mech_page.common import (  # noqa: E402
 )
 from mech_page.context import MechPageContext  # noqa: E402
 from mech_page.tabs import (  # noqa: E402
+    render_ablation_tab,
     render_activation_patching_tab,
     render_attribution_tab,
     render_attention_tab,
@@ -32,7 +33,7 @@ from utils.constants import PRUNING_EXPERIMENT_DIR  # noqa: E402
 
 st.set_page_config(layout="wide")
 
-st.title("Mechanistic interpretability")
+st.title("Mechanistic Interpretability")
 
 runs = sorted([p.name for p in PRUNING_EXPERIMENT_DIR.iterdir() if p.is_dir()])
 if not runs:
@@ -106,12 +107,13 @@ ctx = MechPageContext(
     compat=compat,
 )
 
-tab_attr, tab_attention, tab_patch, tab_path = st.tabs(
+tab_attr, tab_attention, tab_patch, tab_path, tab_abl = st.tabs(
     [
         "Attribution Analysis",
         "Attention Analysis",
         "Activation Patching",
         "Path Patching",
+        "Ablation Analysis",
     ]
 )
 
@@ -126,3 +128,6 @@ with tab_patch:
 
 with tab_path:
     render_path_patching_tab(ctx)
+
+with tab_abl:
+    render_ablation_tab(ctx)

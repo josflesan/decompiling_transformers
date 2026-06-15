@@ -21,6 +21,7 @@ class DiagonalPrimitive(Primitive):
         nth_diagonal: int = 1
     ):
         super().__init__(domain, shape)
+        self.config_nth_diagonal = nth_diagonal
         self.nth_diagonal = nth_diagonal - 1
         
         # Determine D-RASP operation shorthand
@@ -52,4 +53,4 @@ class DiagonalPrimitive(Primitive):
         return matrix
 
     def __str__(self):
-        return f"Diagonal (-{self.nth_diagonal}) | {self.domain} | {self.shape}"
+        return f"Diagonal ({self.config_nth_diagonal}) | {self.domain} | {self.shape}"

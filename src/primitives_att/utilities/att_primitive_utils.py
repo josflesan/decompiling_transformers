@@ -16,7 +16,7 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
 
-def load_config(config_path: str) -> None:
+def load_config(config_path: str) -> AttPrimitivesConfig:
     """Loads YAML file for Att primitive run and uses dataclasses to build structured output"""
     with open(config_path) as f:
         raw = yaml.safe_load(f)

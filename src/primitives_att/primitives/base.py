@@ -13,6 +13,6 @@ class Primitive(ABC):
         self.shape = shape
     
     @abstractmethod
-    def construct(shape_left: Optional[int], shape_right: int, tokenizer: CustomTokenizer) -> torch.Tensor:
+    def construct(self, shape_left: Optional[int], shape_right: int, tokenizer: CustomTokenizer) -> torch.Tensor:
         """Construct the primitive matrix"""
         pass

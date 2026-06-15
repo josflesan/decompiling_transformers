@@ -7,6 +7,13 @@ skip_convert: False
 batch_size: 120
 learning_rate: 0.001
 
+search_method: greedy_search
+threshold_on_acc: 0.95
+only_default_scalars: true
+num_test_steps: 10
+eval_batch_size: 120
+failure_threshold: 0.9
+
 # Attention Primitives
 att_primitives_matrix:
   - type: diagonal

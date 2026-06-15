@@ -11,6 +11,7 @@ by Huang et al. (2026)
 ### Stages:
 - **Pruning**: monitor pruning stages and metrics for different experiments
 - **Primitive Search**: monitor primitive search training and results
+- **Mechanistic**: run attribution and other mechanistic experiments for a chosen checkpoint
 - **RASP Conversion**: run and inspect final conversion results
 
 Use the sidebar to navigate.

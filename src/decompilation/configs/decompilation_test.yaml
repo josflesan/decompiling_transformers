@@ -1,0 +1,127 @@
+# Shared settings propagated to all stages unless overridden below.
+seed: 0
+device: mps
+exp_name: prune_test
+output_dir: src/out
+model_path: models/count-%2l4h256d4lr01drop
+
+task_config:
+  name: counting
+  train_length_range: [0, 150]
+  val_length_range: [0, 150]
+  max_test_length: 150
+
+# Pipeline control
+run_pruning: true
+run_mlp_primitives: true
+run_att_primitives: true
+
+pruning:
+  init_sample_param: 8
+  lr_sampler_for_pruning: 0.1
+  lr_ln_var_for_pruning: 0.1
+  lr_oa_for_pruning: 0.002
+  lr_mlp_for_pruning: 0.001
+  pruning_stages:
+    stage3:
+      lamb: 0.00000065
+      num_steps: 500
+      num_repeat: 12
+      train_batch_size: 120
+      mini_batch_size: 20
+      test_batch_size: 120
+
+mlp_primitives:
+  skip_convert: false
+  skip_vis: false
+  do_test: false
+  batch_size: 128
+  success_threshold: 0.92
+  failure_threshold: 0.9
+  mlp_primitives:
+    - type: noop
+    - type: sharpen
+      pow: 2
+    - type: sharpen
+      pow: 3
+    - type: sharpen
+      pow: 5
+    - type: harden
+    - type: erase
+    - type: zeroone
+      pow: 0.5
+      center: 0
+    - type: zeroone
+      pow: 0.05
+      center: 0
+    - type: zeroone
+      pow: 0.01
+      center: 0
+    - type: forall
+      threshold: 0.95
+    - type: forall
+      threshold: 0.9
+    - type: forall
+      threshold: 0.85
+    - type: forall
+      threshold: 0.8
+    - type: forall
+      threshold: 0.75
+    - type: forall
+      threshold: 0.7
+    - type: exists
+    - type: equal
+
+att_primitives:
+  skip_convert: false
+  batch_size: 120
+  learning_rate: 0.001
+  search_method: greedy_search_then_round
+  threshold_on_acc: 0.95
+  only_default_scalars: true
+  num_test_steps: 200
+  eval_batch_size: 120
+  failure_threshold: 0.9
+  round:
+    training_lambda: 0.01
+    num_steps: 2000
+    lr: 0.0001
+    two_stages: true
+  att_primitives_matrix:
+    - type: diagonal
+      nth_diagonal: 1
+    - type: diagonal
+      nth_diagonal: 2
+    - type: diagonal
+      nth_diagonal: 3
+    - type: toSpecial
+      special_token: bos
+    - type: toSpecial
+      special_token: sep
+    - type: everyN
+      every_nth: 2
+    - type: everyN
+      every_nth: 3
+    - type: increasing
+    - type: decreasing
+    - type: zero
+  att_primitives_bias:
+    - type: increasing
+    - type: decreasing
+    - type: zero
+    - type: toSpecial
+      special_token: bos
+    - type: toSpecial
+      special_token: eos
+    - type: toSpecial
+      special_token: sep
+  unembedding_primitives_matrix:
+    - type: diagonal
+      nth_diagonal: 1
+    - type: toSpecial
+      special_token: eos
+    - type: zero
+  unembedding_primitives_bias:
+    - type: toSpecial
+      special_token: eos
+    - type: zero

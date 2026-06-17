@@ -10,7 +10,14 @@ import torch
 import torch.nn.functional as F
 
 from data.CustomTokenizer import CustomTokenizer
+from primitives_att.utilities.matrix_visualization import (
+    MatrixSaver,
+    activation_ticks,
+    example_ticks,
+    interaction_save_name,
+)
 from primitives_att.utilities.product_tracing import (
+    get_product_for_one_side,
     get_product_for_one_side_for_head,
     get_product_for_one_side_for_unembed,
 )
@@ -22,6 +29,12 @@ ConvertedMlp = Dict[str, PrimitiveSearchOutput]
 PrimitivesMap = Dict[Any, Any]
 
 SPECIAL_TOKEN_IDS = ("sep_token_id", "bos_token_id", "eos_token_id", "pad_token_id")
+
+
+def _first_sequence(tensor: torch.Tensor) -> torch.Tensor:
+    if tensor.dim() > 1:
+        return tensor[0]
+    return tensor
 
 
 def _get_wte_wpe_inputs(hooked_model: GPT2QKHooks) -> tuple[torch.Tensor, torch.Tensor]:
@@ -55,12 +68,30 @@ def _build_primitive_matrix(
     dtype: torch.dtype,
     device: torch.device,
 ) -> torch.Tensor:
+    """
+    Builds the primitive matrix for the attention interaction. If a query is not provided,
+    the primitive matrix is a 1D bias vector.
+    
+    Args:
+        interaction_primitive: The interaction primitive.
+        indep_prod: The independent product of the attention interaction.
+        activation_name_q: The name of the query activation.
+        tokenizer: The tokenizer.
+        dtype: The dtype of the primitive matrix.
+        device: The device of the primitive matrix.
+
+    Returns:
+        The primitive matrix.
+    """
+
     if interaction_primitive.primitive is not None:
         special_tokens = [getattr(tokenizer, attr) for attr in SPECIAL_TOKEN_IDS]
         if activation_name_q is not None:
             primitive_matrix = interaction_primitive.primitive.construct(
                 indep_prod.shape[0], indep_prod.shape[1], tokenizer
             ).to(dtype=dtype, device=device)
+            
+            # If special primitive is provided, apply it to the primitive matrix
             if interaction_primitive.special_primitive is not None:
                 special_matrix = interaction_primitive.special_primitive.construct(
                     indep_prod.shape[0], indep_prod.shape[1], tokenizer
@@ -71,8 +102,10 @@ def _build_primitive_matrix(
                 None, indep_prod.shape[1], tokenizer
             ).to(dtype=dtype, device=device)
             assert interaction_primitive.special_primitive is None
+            
         return _apply_scaling(primitive_matrix, _get_scaling_factor(interaction_primitive))
 
+    # If a replacement matrix is provided, return it
     if interaction_primitive.replacement_matrix is not None:
         return interaction_primitive.replacement_matrix.get_matrix().to(dtype=dtype, device=device)
 
@@ -90,6 +123,24 @@ def _compute_side_products(
     input_ids: torch.Tensor,
     position_ids: torch.Tensor,
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+    """
+    Computes the side products for the attention interaction.
+    
+    Args:
+        hooked_model: The hooked model.
+        oa_vecs: The optimal ablation vectors.
+        converted_mlp: The converted MLP.
+        layer: The layer of the attention interaction.
+        head: The head of the attention interaction.
+        activation_name_q: The name of the query activation.
+        activation_name_k: The name of the key activation.
+        input_ids: The input IDs.
+        position_ids: The position IDs.
+
+    Returns:
+        A tuple containing the soft activations and the independent product.
+    """
+
     qk_types = ["q", "k"] if activation_name_q is not None else ["k"]
     activation_names = {
         "q": activation_name_q,
@@ -163,6 +214,10 @@ def attention_primitive_forward(
     batch_size, seq_len, d_model = self.activations["wte"].size()
     device = self.activations["wte"].device
     input_ids, position_ids = _get_wte_wpe_inputs(self)
+    matrix_saver = MatrixSaver(self, tokenizer, converted_mlp)
+    matrix_saver.save_pos_tok_once(input_ids, position_ids)
+    example_axis = example_ticks(tokenizer, input_ids)
+    example_y = example_ticks(tokenizer, input_ids) if True else None
 
     input_activations = []
     for head in range(num_heads):
@@ -195,6 +250,11 @@ def attention_primitive_forward(
         for interaction, interaction_primitive in primitives[layer][head].items():
             activation_name_q = interaction.activation_name_to_keep_q
             activation_name_k = interaction.activation_name_to_keep_k
+            save_name = interaction_save_name(activation_name_q, activation_name_k)
+            head_dir = f"{layer}-{head}"
+            ticks_x, ticks_y = matrix_saver.attention_ticks(activation_name_q, activation_name_k)
+            ticks_y_example = None if activation_name_q is None else example_axis
+
             act_soft, indep_prod = _compute_side_products(
                 self,
                 oa_vecs,
@@ -212,6 +272,13 @@ def attention_primitive_forward(
                 and interaction_primitive.replacement_matrix is None
             ):
                 term = _interaction_logits(act_soft, indep_prod, None, activation_name_q)
+                matrix_saver.save(
+                    ("attn", "original-example", layer, head, save_name),
+                    term[0],
+                    f"{head_dir}/original-example/{save_name}.png",
+                    ticks_x=example_axis,
+                    ticks_y=ticks_y_example,
+                )
             else:
                 primitive_matrix = _build_primitive_matrix(
                     interaction_primitive,
@@ -221,8 +288,30 @@ def attention_primitive_forward(
                     attn_weights.dtype,
                     attn_weights.device,
                 )
+                matrix_saver.save(
+                    ("attn", "original", layer, head, save_name),
+                    indep_prod,
+                    f"{head_dir}/original-matrices/{save_name}.png",
+                    ticks_x=ticks_x,
+                    ticks_y=ticks_y,
+                )
+                matrix_saver.save(
+                    ("attn", "primitives", layer, head, save_name),
+                    primitive_matrix,
+                    f"{head_dir}/primitives-matrices/{save_name}.png",
+                    ticks_x=ticks_x,
+                    ticks_y=ticks_y,
+                )
                 term = _interaction_logits(
                     act_soft, indep_prod, primitive_matrix, activation_name_q
+                )
+                matrix_saver.save(
+                    ("attn", "primitives-example", layer, head, save_name),
+                    term[0],
+                    f"{head_dir}/primitives-example/{save_name}.png",
+                    ticks_x=example_axis,
+                    ticks_y=ticks_y_example,
+                    add_causal_mask=activation_name_q is not None,
                 )
 
             attn_weights[:, head, :, :] += term
@@ -243,6 +332,32 @@ def attention_primitive_forward(
     attn_weights = F.softmax(attn_weights, dim=-1)
     attn_weights = attn_weights.type(value_states.dtype)
     self.activations[f"attn_weights-{layer}"] = attn_weights.detach()
+
+    for head in range(num_heads):
+        if self.activation_name_to_keep[head] is None:
+            continue
+        activation_name = self.activation_name_to_keep[head]
+        dep_v, _ = get_product_for_one_side(
+            self,
+            oa_vecs,
+            converted_mlp,
+            activation_name,
+            input_ids,
+            position_ids,
+        )
+        if dep_v.dim() < 3:
+            dep_v = dep_v.unsqueeze(0)
+        agg_var = torch.matmul(attn_weights[0, head, :, :], dep_v[0, :, :])
+        agg_name = f"aggregation-attn_output-{layer}-{head}-{activation_name}"
+        matrix_saver.save(
+            ("attn", "primitives-example", layer, head, agg_name),
+            agg_var.T,
+            f"{layer}-{head}/primitives-example/{agg_name}.png",
+            ticks_x=example_axis,
+            ticks_y=activation_ticks(
+                activation_name, converted_mlp, self.config, tokenizer
+            ),
+        )
 
     attn_output = torch.matmul(attn_weights, value_states)
     attn_output = attn_output.transpose(1, 2)
@@ -282,9 +397,15 @@ def lm_head_primitive_hook(
     logits_output = None
     input_ids = hooked_model.input_ids.to(hooked_model.device)
     position_ids = hooked_model.position_ids.to(hooked_model.device)
+    matrix_saver = MatrixSaver(hooked_model, tokenizer, converted_mlp)
+    example_axis = example_ticks(tokenizer, _first_sequence(input_ids))
+    vocab_axis = [tokenizer.vocab_inv[i] for i in range(len(tokenizer.vocab))]
 
     for interaction, primitive in primitives["lm_head"].items():
         activation_name = interaction.activation_name_to_keep
+        ticks_y = None if activation_name == "vocab_bias" else activation_ticks(
+            activation_name, converted_mlp, hooked_model.config, tokenizer
+        )
 
         if primitive is None or (
             primitive.primitive is None and primitive.replacement_matrix is None
@@ -301,6 +422,40 @@ def lm_head_primitive_hook(
                 prod = indep_prod
             else:
                 prod = dep_prod @ indep_prod
+
+            if prod.dim() == 2:
+                prod = prod.unsqueeze(0)
+
+            if activation_name == "vocab_bias":
+                matrix_saver.save(
+                    ("logits", "original", activation_name),
+                    prod.squeeze(),
+                    f"lm_head/original-matrices/bias.png",
+                    ticks_x=vocab_axis,
+                    ticks_y=ticks_y,
+                )
+                matrix_saver.save(
+                    ("logits", "original-example", activation_name),
+                    prod.squeeze().reshape(-1, 1).repeat(1, len(example_axis)),
+                    f"lm_head/original-example/bias.png",
+                    ticks_x=example_axis,
+                    ticks_y=vocab_axis,
+                )
+            else:
+                matrix_saver.save(
+                    ("logits", "original", activation_name),
+                    indep_prod,
+                    f"lm_head/original-matrices/{activation_name}.png",
+                    ticks_x=vocab_axis,
+                    ticks_y=ticks_y,
+                )
+                matrix_saver.save(
+                    ("logits", "original-example", activation_name),
+                    prod[0].T,
+                    f"lm_head/original-example/{activation_name}.png",
+                    ticks_x=example_axis,
+                    ticks_y=vocab_axis,
+                )
         elif activation_name == "vocab_bias":
             if primitive.replacement_matrix is not None:
                 prod = primitive.replacement_matrix.get_matrix()
@@ -311,6 +466,20 @@ def lm_head_primitive_hook(
                 assert primitive.special_primitive is None
                 prod = _apply_scaling(primitive_matrix, _get_scaling_factor(primitive))
             prod = prod.unsqueeze(0)
+            matrix_saver.save(
+                ("logits", "primitives", activation_name),
+                prod.squeeze(),
+                f"lm_head/primitives-matrices/bias.png",
+                ticks_x=vocab_axis,
+                ticks_y=ticks_y,
+            )
+            matrix_saver.save(
+                ("logits", "primitives-example", activation_name),
+                prod.squeeze().reshape(-1, 1).repeat(1, len(example_axis)),
+                f"lm_head/primitives-example/bias.png",
+                ticks_x=example_axis,
+                ticks_y=vocab_axis,
+            )
         else:
             dep_prod, indep_prod = get_product_for_one_side_for_unembed(
                 hooked_model,
@@ -336,6 +505,24 @@ def lm_head_primitive_hook(
             else:
                 primitive_matrix = primitive.replacement_matrix.get_matrix()
             prod = dep_prod @ primitive_matrix
+
+            if prod.dim() == 2:
+                prod = prod.unsqueeze(0)
+
+            matrix_saver.save(
+                ("logits", "primitives", activation_name),
+                primitive_matrix,
+                f"lm_head/primitives-matrices/{activation_name}.png",
+                ticks_x=vocab_axis,
+                ticks_y=ticks_y,
+            )
+            matrix_saver.save(
+                ("logits", "primitives-example", activation_name),
+                prod[0].T,
+                f"lm_head/primitives-example/{activation_name}.png",
+                ticks_x=example_axis,
+                ticks_y=vocab_axis,
+            )
 
         if prod.dim() == 2:
             prod = prod.unsqueeze(0)

@@ -24,7 +24,7 @@ def _uses_split_mlps(oa_vecs: OptimalQueryBiasVectors) -> bool:
 
 
 @torch.no_grad()
-def get_product_for_one_side(
+def _get_product_for_one_side_split(
     hooked_model: GPT2QKHooks,
     oa_vecs: OptimalQueryBiasVectors,
     converted_mlp: Dict[str, PrimitiveSearchOutput],
@@ -159,10 +159,24 @@ def _get_product_for_one_side(
     position_ids: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     if _uses_split_mlps(oa_vecs):
-        return get_product_for_one_side(
+        return _get_product_for_one_side_split(
             hooked_model, oa_vecs, converted_mlp, path, input_ids, position_ids
         )
     return get_product_for_one_side_multi_source(
+        hooked_model, oa_vecs, converted_mlp, path, input_ids, position_ids
+    )
+
+
+@torch.no_grad()
+def get_product_for_one_side(
+    hooked_model: GPT2QKHooks,
+    oa_vecs: OptimalQueryBiasVectors,
+    converted_mlp: Dict[str, PrimitiveSearchOutput],
+    path: str,
+    input_ids: torch.Tensor,
+    position_ids: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    return _get_product_for_one_side(
         hooked_model, oa_vecs, converted_mlp, path, input_ids, position_ids
     )
 
@@ -188,6 +202,144 @@ def get_product_for_one_side_for_head(
     w_q_or_k = get_qk_for_head(hooked_model.model, attn_layer_idx, qk_type, attn_head_idx)
     indep_prod = indep_prod @ w_ln @ w_q_or_k
     return dep_prod, indep_prod
+
+
+@torch.no_grad()
+def get_product_for_one_side_ignore_dep_prod(
+    hooked_model: GPT2QKHooks,
+    oa_vecs: OptimalQueryBiasVectors,
+    converted_mlp: Dict[str, PrimitiveSearchOutput],
+    path: str,
+) -> torch.Tensor:
+    model = hooked_model.model
+    d_model = model.config.hidden_size
+
+    pattern = r'attn_output-\d+-\d+|mlp-\d+|lm_head|wte|wpe'
+    split_nodes = re.findall(pattern, path)
+    split_nodes = split_nodes[::-1].copy()
+    indep_prod = None
+
+    for idx, node in enumerate(split_nodes):
+        if node.startswith("attn_output"):
+            _, layer, head = node.split("-")
+            layer, head = int(layer), int(head)
+            past_path = "-".join(split_nodes[idx - 1::-1])
+            w_ln = get_ln_matrix_for_node(model, oa_vecs, layer, "v", head, past_path)
+            w_v, w_o = get_ov_for_head(model, layer, head)
+            indep_prod = indep_prod @ w_ln @ w_v @ w_o
+
+        elif node == "wte":
+            indep_prod = model.transformer.wte.weight.data
+        elif node == "wpe":
+            indep_prod = model.transformer.wpe.weight.data
+        elif node.startswith("mlp"):
+            node_path = "-".join(split_nodes[idx::-1])
+            if node_path in converted_mlp:
+                indep_prod = converted_mlp[node_path].best_C
+            else:
+                indep_prod = torch.eye(d_model, device=model.device)
+        else:
+            raise RuntimeError(f"Node not recognized: {node}")
+
+    return indep_prod
+
+
+@torch.no_grad()
+def get_product_for_one_side_ignore_dep_prod_multi_source(
+    hooked_model: GPT2QKHooks,
+    oa_vecs: OptimalQueryBiasVectors,
+    converted_mlp: Dict[str, PrimitiveSearchOutput],
+    path: str,
+) -> torch.Tensor:
+    model = hooked_model.model
+    d_model = model.config.hidden_size
+
+    if path.startswith("mlp"):
+        if path in converted_mlp:
+            return converted_mlp[path].best_C
+        return torch.eye(d_model, device=model.device)
+
+    pattern = r'attn_output-\d+-\d+|mlp-\d+|lm_head|wte|wpe'
+    split_nodes = re.findall(pattern, path)
+    indep_prod = None
+
+    for idx, node in enumerate(split_nodes):
+        if node.startswith("attn_output"):
+            _, layer, head = node.split("-")
+            layer, head = int(layer), int(head)
+            past_path = "-".join(split_nodes[idx + 1:])
+            w_ln = get_ln_matrix_for_node(model, oa_vecs, layer, "v", head, past_path)
+            w_v, w_o = get_ov_for_head(model, layer, head)
+            absorbed = w_ln @ w_v @ w_o
+            indep_prod = absorbed @ indep_prod if indep_prod is not None else absorbed
+
+        elif node == "wte":
+            wte = model.transformer.wte.weight.data
+            indep_prod = wte @ indep_prod if indep_prod is not None else wte
+        elif node == "wpe":
+            wpe = model.transformer.wpe.weight.data
+            indep_prod = wpe @ indep_prod if indep_prod is not None else wpe
+        elif node.startswith("mlp"):
+            indep_p = get_product_for_one_side_ignore_dep_prod_multi_source(
+                hooked_model, oa_vecs, converted_mlp, node
+            )
+            indep_prod = indep_p @ indep_prod if indep_prod is not None else indep_p
+        else:
+            raise RuntimeError(f"Node not recognized: {node}")
+
+    return indep_prod
+
+
+@torch.no_grad()
+def get_product_for_one_side_for_head_ignore_dep_prod(
+    hooked_model: GPT2QKHooks,
+    oa_vecs: OptimalQueryBiasVectors,
+    converted_mlp: Dict[str, PrimitiveSearchOutput],
+    attn_layer_idx: int,
+    attn_head_idx: int,
+    qk_type: str,
+    path: str,
+) -> torch.Tensor:
+    if _uses_split_mlps(oa_vecs):
+        indep_prod = get_product_for_one_side_ignore_dep_prod(
+            hooked_model, oa_vecs, converted_mlp, path
+        )
+    else: 
+        indep_prod = get_product_for_one_side_ignore_dep_prod_multi_source(
+        hooked_model, oa_vecs, converted_mlp, path
+        )
+    
+    w_ln = get_ln_matrix_for_node(
+        hooked_model.model, oa_vecs, attn_layer_idx, qk_type, attn_head_idx
+    )
+    w_q_or_k = get_qk_for_head(hooked_model.model, attn_layer_idx, qk_type, attn_head_idx)
+    return indep_prod @ w_ln @ w_q_or_k
+
+
+@torch.no_grad()
+def get_product_for_one_side_for_unembed_ignore_dep_prod(
+    hooked_model: GPT2QKHooks,
+    oa_vecs: OptimalQueryBiasVectors,
+    converted_mlp: Dict[str, PrimitiveSearchOutput],
+    path: str,
+) -> torch.Tensor:
+    if path != "vocab_bias":
+        if _uses_split_mlps(oa_vecs):
+            indep_prod = get_product_for_one_side_ignore_dep_prod(
+                hooked_model, oa_vecs, converted_mlp, path
+            )
+        else: 
+            indep_prod = get_product_for_one_side_ignore_dep_prod_multi_source(
+            hooked_model, oa_vecs, converted_mlp, path
+            )
+    
+    else:
+        indep_prod = oa_vecs.output_vertex_oa.data[
+            oa_vecs.to_out_oa_idx[("lm_head",)]
+        ].unsqueeze(0)
+
+    w_ln = get_ln_matrix_for_node(hooked_model.model, oa_vecs, None, "lm_head", None)
+    return indep_prod @ w_ln @ hooked_model.model.lm_head.weight.data.T
 
 
 @torch.no_grad()

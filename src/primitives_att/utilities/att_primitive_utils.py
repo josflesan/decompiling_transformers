@@ -7,7 +7,11 @@ import yaml
 from enum import Enum
 from dacite import from_dict
 
-from primitives_att.utilities.att_primitive_dataclasses import PrimitiveConfig, AttPrimitivesConfig
+from primitives_att.utilities.att_primitive_dataclasses import (
+    PrimitiveConfig,
+    AttPrimitivesConfig,
+    RoundConfig,
+)
 from utilities.core import TaskConfig
 
 def set_seed(seed: int) -> None:
@@ -38,6 +42,9 @@ def load_config(config_path: str) -> AttPrimitivesConfig:
     
     # Convert task config dict into TaskConfig object
     raw['task_config'] = TaskConfig(**raw['task_config'])
+
+    if 'round' in raw:
+        raw['round'] = RoundConfig(**raw['round'])
     
     # Instantiate AttPrimitivesConfig
     config = from_dict(AttPrimitivesConfig, raw)

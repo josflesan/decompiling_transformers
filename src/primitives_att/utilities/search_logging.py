@@ -8,9 +8,20 @@ from primitives_att.utilities.att_primitive_dataclasses import (
     AbstractPrimitive,
     AttentionInteraction,
     LogitsInteraction,
+    PrimitiveEval,
 )
 
 PrimitivesMap = Dict[Any, Any]
+
+
+def is_successfully_converted(abstract: Optional[AbstractPrimitive]) -> bool:
+    if abstract is None:
+        return False
+    if abstract.primitive is not None:
+        return True
+    if abstract.replacement_matrix is not None:
+        return bool(abstract.replacement_matrix.do_round)
+    return False
 
 
 def interaction_id(
@@ -44,6 +55,12 @@ def abstract_primitive_fields(abstract: Optional[AbstractPrimitive]) -> Optional
         "primitive": primitive_label(abstract.primitive),
         "special_primitive": primitive_label(abstract.special_primitive),
         "scaling_factor": abstract.scaling_factor,
+        "replacement_matrix": abstract.replacement_matrix is not None,
+        "rounded": (
+            abstract.replacement_matrix.do_round
+            if abstract.replacement_matrix is not None
+            else None
+        ),
     }
 
 
@@ -58,15 +75,27 @@ def count_interactions(interaction_map: PrimitivesMap) -> int:
 
 def count_converted(interaction_map: PrimitivesMap) -> int:
     converted = sum(
-        1 for p in interaction_map["lm_head"].values() if p is not None
+        1 for p in interaction_map["lm_head"].values() if is_successfully_converted(p)
     )
     for layer in interaction_map:
         if isinstance(layer, int):
             for head in interaction_map[layer]:
                 converted += sum(
-                    1 for p in interaction_map[layer][head].values() if p is not None
+                    1
+                    for p in interaction_map[layer][head].values()
+                    if is_successfully_converted(p)
                 )
     return converted
+
+
+def interaction_eval(interaction_map: PrimitivesMap) -> PrimitiveEval:
+    converted = count_converted(interaction_map)
+    total = count_interactions(interaction_map)
+    return PrimitiveEval(
+        zero_parameters=[converted],
+        total_parameters=[total],
+        is_fully_replaced=[converted == total and total > 0],
+    )
 
 
 def head_interaction_state(

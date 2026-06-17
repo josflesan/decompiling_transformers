@@ -8,7 +8,12 @@ import logging
 from typing import Any, Dict, Optional
 
 from primitives_att.core.PrimitiveExecutionEngine import PrimitiveExecutionEngine
-from primitives_att.core.search_strategies import GreedySearchStrategy, SearchStrategy
+from primitives_att.core.search_strategies import (
+    GreedySearchStrategy,
+    GreedyThenRoundStrategy,
+    RoundSearchStrategy,
+    SearchStrategy,
+)
 from primitives_att.primitives.base import Primitive
 from primitives_att.utilities.att_primitive_dataclasses import (
     AttPrimitiveSearchOutput,
@@ -16,7 +21,7 @@ from primitives_att.utilities.att_primitive_dataclasses import (
     EvalMetrics,
 )
 from primitives_att.utilities.registry import PrimitiveDomain, PrimitiveShape
-from primitives_att.utilities.search_logging import count_interactions
+from primitives_att.utilities.search_logging import count_interactions, interaction_eval
 from utilities.metrics_logger import MetricsLogger
 
 PrimitivesMap = Dict[Any, Any]
@@ -24,6 +29,8 @@ CandidatePrimitives = Dict[tuple[PrimitiveDomain, PrimitiveShape], list[Primitiv
 
 SEARCH_STRATEGIES: Dict[str, type[SearchStrategy]] = {
     "greedy_search": GreedySearchStrategy,
+    "round": RoundSearchStrategy,
+    "greedy_search_then_round": GreedyThenRoundStrategy,
 }
 
 
@@ -93,9 +100,10 @@ class PrimitiveSearchEngine:
             logger=self.logger,
             metrics_logger=self.metrics_logger,
         )
-        primitives_after_search, primitive_eval = strategy.search(
+        primitives_after_search, _ = strategy.search(
             interaction_map, search_threshold
         )
+        primitive_eval = interaction_eval(primitives_after_search)
 
         final_metrics = self.execution_engine.evaluate(
             primitives_after_search,
@@ -127,15 +135,9 @@ class PrimitiveSearchEngine:
             acc_after=final_metrics.acc,
             kl_before=baseline.kl,
             kl_after=final_metrics.kl,
-            converted_count=primitive_eval.zero_parameters[0]
-            if primitive_eval.zero_parameters
-            else 0,
-            total_interactions=primitive_eval.total_parameters[0]
-            if primitive_eval.total_parameters
-            else 0,
-            fully_replaced=primitive_eval.is_fully_replaced[0]
-            if primitive_eval.is_fully_replaced
-            else False,
+            converted_count=primitive_eval.zero_parameters[0],
+            total_interactions=primitive_eval.total_parameters[0],
+            fully_replaced=primitive_eval.is_fully_replaced[0],
         )
 
         return AttPrimitiveSearchOutput(

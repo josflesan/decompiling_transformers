@@ -78,6 +78,21 @@ class PrimitiveRegistration:
 
 
 @dataclass
+class RoundConfig:
+    training_lambda: float = 0.01
+    num_steps: int = 2000
+    lr: float = 0.0001
+    two_stages: bool = True
+    train_scalar: bool = False
+    round_loss_coef: float = 1.0
+    scalar_loss_coef: float = 1.0
+    to_zero_loss_coef: float = 1.0
+    average_over_pixels: bool = True
+    to_zero_loss_penalty: str = "l1"
+    round_loss_penalty: str = "l1"
+
+
+@dataclass
 class AttPrimitivesConfig:
     seed: int
     device: str
@@ -98,6 +113,7 @@ class AttPrimitivesConfig:
     num_test_steps: int = 10
     eval_batch_size: int = 120
     failure_threshold: float = 0.9
+    round: Optional[RoundConfig] = None
 
     full_output_dir: Path = field(init=False)
     torch_device: torch.device = field(init=False)

@@ -7,12 +7,19 @@ skip_convert: False
 batch_size: 120
 learning_rate: 0.001
 
-search_method: greedy_search
+search_method: greedy_search_then_round
 threshold_on_acc: 0.95
 only_default_scalars: true
 num_test_steps: 10
 eval_batch_size: 120
 failure_threshold: 0.9
+
+# Phase 2 round fallback (used when search_method: greedy_search_then_round)
+round:
+  training_lambda: 0.01
+  num_steps: 2000
+  lr: 0.0001
+  two_stages: true
 
 # Attention Primitives
 att_primitives_matrix:

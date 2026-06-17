@@ -27,6 +27,7 @@ from primitives_att.utilities.att_primitive_dataclasses import (
     LogitsInteraction,
 )
 from primitives_att.utilities.registry import PrimitiveRegistry
+from primitives_att.utilities.search_logging import count_converted, count_interactions, interaction_eval
 from tasks.registry import get_task
 from utilities.core import int_key_hook
 from utilities.logger import setup_logger
@@ -227,6 +228,28 @@ class AttPrimitivePipeline:
             return [AttPrimitivePipeline._to_jsonable(v) for v in obj]
         return obj
 
+    def _save_heatmaps(self, execution_engine: PrimitiveExecutionEngine) -> None:
+        assert self.hooked_model is not None
+        assert self.converted_att is not None
+
+        self.hooked_model.save_matrices_path = str(self.config.full_output_dir / "heatmaps")
+        self.hooked_model.saved_matrices = set()
+        self.hooked_model.save_matrices = True
+        full_metrics = execution_engine.evaluate(
+            self.converted_att.primitives,
+            num_steps=self.config.num_test_steps,
+            batch_size=self.config.batch_size,
+        )
+        self.hooked_model.save_matrices = False
+        self.converted_att.stats.setdefault("acc", {})["after_full_batch"] = full_metrics.acc
+        self.converted_att.stats.setdefault("kl", {})["after_full_batch"] = full_metrics.kl
+        self.converted_att.stats.setdefault("acc_match", {})[
+            "after_full_batch"
+        ] = full_metrics.acc_match
+        self.converted_att.stats.setdefault("task_loss", {})[
+            "after_full_batch"
+        ] = full_metrics.task_loss
+
     def run(self) -> Dict[Any, Any]:
         self._setup()
         assert self.hooked_model is not None
@@ -236,14 +259,28 @@ class AttPrimitivePipeline:
         assert self.mask_sampler is not None
         assert self.tokenizer is not None
 
+        use_bce = getattr(self.dataloader.dataset, "BCE", False)
+
         if self.config.skip_convert:
             self.converted_att = torch.load(
                 self.config.full_output_dir / "converted_att.pt", weights_only=False
             )
+            execution_engine = PrimitiveExecutionEngine(
+                hooked_model=self.hooked_model,
+                original_model=self.orig_model,
+                dataloader=self.dataloader,
+                mask_sampler=self.mask_sampler,
+                oa_vecs=self.oa_vecs,
+                tokenizer=self.tokenizer,
+                converted_mlp=self.converted_mlp,
+                logger=self.logger,
+                metrics_logger=self.metrics_logger,
+                use_bce=use_bce,
+            )
+            self._save_heatmaps(execution_engine)
             return self.converted_att.primitives
 
         interaction_map = self._build_interaction_map()
-        use_bce = getattr(self.dataloader.dataset, "BCE", False)
 
         execution_engine = PrimitiveExecutionEngine(
             hooked_model=self.hooked_model,
@@ -254,6 +291,7 @@ class AttPrimitivePipeline:
             tokenizer=self.tokenizer,
             converted_mlp=self.converted_mlp,
             logger=self.logger,
+            metrics_logger=self.metrics_logger,
             use_bce=use_bce,
         )
 
@@ -266,15 +304,7 @@ class AttPrimitivePipeline:
         )
         self.converted_att = search_engine.search(copy.deepcopy(interaction_map))
 
-        full_metrics = execution_engine.evaluate(
-            self.converted_att.primitives,
-            num_steps=self.config.num_test_steps,
-            batch_size=self.config.batch_size,
-        )
-        self.converted_att.stats["acc"]["after_full_batch"] = full_metrics.acc
-        self.converted_att.stats["kl"]["after_full_batch"] = full_metrics.kl
-        self.converted_att.stats["acc_match"]["after_full_batch"] = full_metrics.acc_match
-        self.converted_att.stats["task_loss"]["after_full_batch"] = full_metrics.task_loss
+        self._save_heatmaps(execution_engine)
 
         torch.save(self.converted_att, self.config.full_output_dir / "converted_att.pt")
 
@@ -295,15 +325,9 @@ class AttPrimitivePipeline:
             acc_match_before=self.converted_att.stats["acc_match"]["before"],
             acc_match_after=self.converted_att.stats["acc_match"]["after"],
             acc_match_after_full_batch=self.converted_att.stats["acc_match"].get("after_full_batch"),
-            converted_count=self.converted_att.eval.zero_parameters[0]
-            if self.converted_att.eval.zero_parameters
-            else 0,
-            total_count=self.converted_att.eval.total_parameters[0]
-            if self.converted_att.eval.total_parameters
-            else 0,
-            fully_replaced=self.converted_att.eval.is_fully_replaced[0]
-            if self.converted_att.eval.is_fully_replaced
-            else False,
+            converted_count=count_converted(self.converted_att.primitives),
+            total_count=count_interactions(self.converted_att.primitives),
+            fully_replaced=interaction_eval(self.converted_att.primitives).is_fully_replaced[0],
         )
 
         self.logger.info(f"Converted attention primitives saved to {self.config.full_output_dir}")

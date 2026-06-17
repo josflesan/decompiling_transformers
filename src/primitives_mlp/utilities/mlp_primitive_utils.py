@@ -33,26 +33,26 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
 
-def load_config(config_path: str) -> None:
+def build_config_from_dict(raw: dict) -> MLPPrimitivesConfig:
+    raw = dict(raw)
+
+    raw["mlp_primitives"] = [
+        PrimitiveConfig(**primitive) for primitive in raw["mlp_primitives"]
+    ]
+    raw["task_config"] = TaskConfig(**raw["task_config"])
+
+    return from_dict(MLPPrimitivesConfig, raw)
+
+
+def load_config(config_path: str) -> MLPPrimitivesConfig:
     """Loads YAML file for MLP primitive run and uses dataclasses to build structured output"""
     with open(config_path) as f:
         raw = yaml.safe_load(f)
-    
-    # Convert list of primitives into PrimitiveConfig objects
-    raw['mlp_primitives'] = [
-        PrimitiveConfig(**primitive) for primitive in raw['mlp_primitives']
-    ]
-    
-    # Convert task config dict into TaskConfig object
-    raw['task_config'] = TaskConfig(**raw['task_config'])
-    
-    # Instantiate MLPPrimitivesConfig
-    config = from_dict(MLPPrimitivesConfig, raw)
+
+    config = build_config_from_dict(raw)
     set_seed(config.seed)
-    
-    # Set Pytorch print options
     torch.set_printoptions(sci_mode=False, precision=5)
-    
+
     return config
 
 def build_primitive(ptype: PrimitiveType, **kwargs):

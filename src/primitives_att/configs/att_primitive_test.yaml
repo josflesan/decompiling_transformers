@@ -10,7 +10,7 @@ learning_rate: 0.001
 search_method: greedy_search_then_round
 threshold_on_acc: 0.95
 only_default_scalars: true
-num_test_steps: 10
+num_test_steps: 200
 eval_batch_size: 120
 failure_threshold: 0.9
 

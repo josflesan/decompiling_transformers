@@ -8,6 +8,22 @@ from itertools import product
 from pruning.core.OptimalAblationVectors import OptimalAblationVectors
 from primitives_mlp.utilities.mlp_primitive_utils import PrimitiveType, build_primitive
 
+
+def gpt2_causal_attention_mask(
+    module: torch.nn.Module,
+    seq_len: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """
+    Lower-triangular bool mask (True = allowed to attend).
+
+    Older HuggingFace GPT2Attention exposed this as a registered `bias` buffer.
+    transformers>=5 removed `attn.bias` in favour of `create_causal_mask`.
+    """
+    if hasattr(module, "bias") and getattr(module, "bias", None) is not None:
+        return module.bias[:, :, :seq_len, :seq_len]
+    return torch.tril(torch.ones(seq_len, seq_len, device=device, dtype=torch.bool))
+
 class GPT2ComponentHooks:
     """
     Model that exposes ablation hooks for causal pruning stage 1 (components). Note this
@@ -931,8 +947,7 @@ class GPT2QKHooks:
             )
         
         # 4. Causal masking
-        query_length, key_length = seq_len, seq_len
-        causal_mask = module.bias[:, :, key_length - query_length : key_length, :key_length]
+        causal_mask = gpt2_causal_attention_mask(module, seq_len, device)
         mask_value = torch.finfo(attn_weights.dtype).min  # Get floating point data type minimum value (-\infty)
         mask_value = torch.full([], mask_value, dtype=attn_weights.dtype, device=attn_weights.device)
         attn_weights = torch.where(causal_mask, attn_weights.to(attn_weights.dtype), mask_value)

@@ -10,6 +10,7 @@ from primitives_mlp.utilities.mlp_primitive_dataclasses import MLPPrimitivesConf
 from primitives_mlp.utilities.mlp_primitive_utils import PrimitiveType, build_primitive
 from primitives_mlp.utilities.activation_tracing import trace_mlp, trace_mlp_multi
 from pruning.core.OptimalAblationVectors import OptimalQueryBiasVectors
+from utilities.core import LossModule
 from utilities.metrics_logger import MetricsLogger
 
 class PrimitiveSearchEngine:
@@ -22,6 +23,7 @@ class PrimitiveSearchEngine:
         converted_mlp: Dict[str, PrimitiveSearchOutput],
         oa_vecs: OptimalQueryBiasVectors,
         dataloader: DataLoader,
+        loss_module: LossModule,
         all_primitives: List[Primitive],
         metrics_logger: MetricsLogger,
         single_input_mlps: bool,
@@ -38,6 +40,7 @@ class PrimitiveSearchEngine:
         self.single_input_mlps = single_input_mlps
         
         self.dataloader = dataloader
+        self.loss_module = loss_module
         self.all_primitives = all_primitives
     
     def _find_optimalC(
@@ -109,18 +112,13 @@ class PrimitiveSearchEngine:
             logits = self.hooked_model(masks=torch.ones((1, 1), device=self.config.torch_device), oa_vecs=self.oa_vecs, **batch).logits
             handle.remove()
             
-            # Compute loss
-            shift_target_logits = target_logits[:, :-1]
-            shift_logits = logits[:, :-1]
-            shift_labels = labels[:, 1:]
-            target_predictions = shift_target_logits.argmax(dim=-1)
-            predictions = shift_logits.argmax(dim=-1)
-            
-            match = ((predictions == target_predictions) | (shift_labels == -100)).all(dim=1)
-            match_num += match.sum().item()
-            correct = ((predictions == shift_labels) | (shift_labels == -100)).all(dim=1)
-            correct_num += correct.sum().item()
-            total_num += correct.numel()
+            batch_size = batch["input_ids"].size(0)
+            acc_task, acc_match = self.loss_module.batch_accuracy(
+                logits, labels, target_logits, batch["input_ids"]
+            )
+            match_num += acc_match * batch_size
+            correct_num += acc_task * batch_size
+            total_num += batch_size
             
             if total_num > 2_000:
                 break

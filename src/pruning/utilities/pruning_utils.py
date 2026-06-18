@@ -18,25 +18,25 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
     
-def load_config(config_path: str) -> None:
+def build_config_from_dict(raw: Dict[str, Any]) -> PruningRunConfig:
+    raw = dict(raw)
+
+    raw["pruning_stages"] = {
+        key: StageConfig(**value) for key, value in raw["pruning_stages"].items()
+    }
+    raw["task_config"] = TaskConfig(**raw["task_config"])
+
+    return from_dict(PruningRunConfig, raw)
+
+
+def load_config(config_path: str) -> PruningRunConfig:
     with open(config_path) as f:
         raw = yaml.safe_load(f)
-        
-    # Convert stage_config dicts into StageConfig objects
-    raw['pruning_stages'] = {
-        key: StageConfig(**value) for key, value in raw['pruning_stages'].items()
-    }
-    
-    # Convert task_config dict into TaskConfig
-    raw['task_config'] = TaskConfig(**raw['task_config'])
-        
-    # Instantiate RunConfig
-    config = from_dict(PruningRunConfig, raw)
+
+    config = build_config_from_dict(raw)
     set_seed(config.seed)
-    
-    # Set Pytorch print options
     torch.set_printoptions(sci_mode=False, precision=5)
-    
+
     return config
 
 def output_model_arch_json(

@@ -2,7 +2,6 @@ import json
 import logging
 import time
 import torch
-import torch.nn.functional as F
 
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -12,10 +11,9 @@ from torch.utils.data import DataLoader
 from transformers import GPT2LMHeadModel
 from typing import Any, Dict, List
 
-from data.CustomCollator import CustomCollator
 from tasks.registry import get_task
 from pruning.utilities.pruning_dataclasses import PruningRunConfig, StageConfig
-from utilities.core import int_key_hook
+from utilities.core import LossModule, int_key_hook
 from utilities.metrics_logger import MetricsLogger
 
 class PruningStage(ABC):
@@ -53,7 +51,8 @@ class PruningStage(ABC):
         self.tokenizer, datasets = self.task.build()
         self.train_dataset = datasets['train']
         self.val_dataset = datasets['val']
-        self.collator = CustomCollator(self.tokenizer.pad_token_id)
+        self.loss_module = LossModule.from_dataset(self.train_dataset, self.tokenizer)
+        self.collator = self.loss_module.collator()
         
         # Initialize model variables
         self.num_layers = len(self.model.transformer.h)
@@ -79,7 +78,6 @@ class PruningStage(ABC):
     def train(
         self,
         oa_param_groups: Dict[str, Any],
-        loss_type: str='algo'  #TODO: implement this distinction for tasks with BCE loss
     ):
         # Set up optimizer, dataloader and other parameters
         gamma = 0.0
@@ -129,29 +127,22 @@ class PruningStage(ABC):
                     mini_batch = {k: v[i : i + mini_batch_size] for k, v in batch.items()}
                     mini_labels = labels[i : i + mini_batch_size]
                     
-                    # Get target logits
+                    # Compute task loss and pruning loss
                     with torch.no_grad():
                         target_logits = self.original_model(**mini_batch).logits
-                    
+
                     masks = self.mask_sampler.sample_masks(mini_batch_size)
                     logits = self.hooked_model(
                         masks=masks,
                         oa_vecs=self.oa_vecs,
                         **mini_batch
                     ).logits
-                    
-                    # Compute task loss and pruning loss
-                    task_loss = F.cross_entropy(
-                        logits[:, :-1].flatten(end_dim=1),
-                        mini_labels[:, 1:].flatten()
-                    ).item()
-                    target_logits = target_logits[:, :-1][mini_labels[:, 1:] != -100]
-                    logits = logits[:, :-1][mini_labels[:, 1:] != -100]
-                    loss = F.kl_div(
-                        F.log_softmax(logits, dim=-1), F.log_softmax(target_logits, dim=-1),
-                        log_target=True,
-                        reduction='mean'
+
+                    result = self.loss_module.compute_batch(
+                        logits, target_logits, mini_labels, mini_batch["input_ids"]
                     )
+                    task_loss = result.task_loss
+                    loss = result.distillation_loss
                     
                     training_logs['kl_div'].append(loss.item())
                     training_logs['task_loss'].append(task_loss)
@@ -166,29 +157,21 @@ class PruningStage(ABC):
                     self.hooked_model.activations.clear() 
                     
             else:
-                # Get target logits
                 with torch.no_grad():
                     target_logits = self.original_model(**batch).logits
-                
+
                 masks = self.mask_sampler.sample_masks(batch_size)
                 logits = self.hooked_model(
                     masks=masks,
                     oa_vecs=self.oa_vecs,
                     **batch
                 ).logits
-                
-                # Compute task loss and pruning loss
-                task_loss = F.cross_entropy(
-                    logits[:, :-1].flatten(end_dim=1),
-                    labels[:, 1:].flatten()
-                ).item()
-                target_logits = target_logits[:, :-1][labels[:, 1:] != -100]
-                logits = logits[:, :-1][labels[:, 1:] != -100]
-                loss = F.kl_div(
-                    F.log_softmax(logits, dim=-1), F.log_softmax(target_logits, dim=-1),
-                    log_target=True,
-                    reduction="mean"
+
+                result = self.loss_module.compute_batch(
+                    logits, target_logits, labels, batch["input_ids"]
                 )
+                task_loss = result.task_loss
+                loss = result.distillation_loss
                 
                 training_logs['kl_div'].append(loss.item())
                 training_logs['task_loss'].append(task_loss)
@@ -288,47 +271,35 @@ class PruningStage(ABC):
         kl_div = 0
         batch_size = self.stage_config.test_batch_size
         dataloader = DataLoader(self.train_dataset, batch_size=batch_size, shuffle=False, collate_fn=self.collator)
-        loss_func = torch.nn.CrossEntropyLoss()
-        
+
         total_batches = 0
         total_examples = 0
-        
+
         with torch.no_grad():
             for current_step, batch in enumerate(dataloader):
-                # Move batch tensors to device
                 batch = {k: v.to(self.config.torch_device) for k, v in batch.items()}
                 current_bz = batch['input_ids'].size(0)
                 total_examples += current_bz
                 total_batches += 1
                 labels = batch.pop("labels")
-                
+
                 target_logits = self.original_model(**batch).logits
-                
+
                 masks = self.mask_sampler.sample_binary_masks(current_bz)
                 logits = self.hooked_model(
                     masks=masks,
                     oa_vecs=self.oa_vecs,
                     **batch
                 ).logits
-                
-                shift_target_logits = target_logits[:, :-1]
-                shift_logits = logits[:, :-1]
-                shift_labels = labels[:, 1:]
-                target_predictions = shift_target_logits.argmax(dim=-1)
-                predictions = shift_logits.argmax(dim=-1)
-                
-                match = ((predictions == target_predictions) | (shift_labels == -100)).all(dim=1)
-                num_match += match.sum().item()
-                
-                correct = ((predictions == shift_labels) | (shift_labels == -100)).all(dim=1)
-                num_correct += correct.sum().item()
-                
-                task_loss += loss_func(shift_logits.flatten(end_dim=1), shift_labels.flatten()).item()
-                kl_div += F.kl_div(
-                    F.log_softmax(shift_logits[shift_labels != -100], dim=-1), F.log_softmax(shift_target_logits[shift_labels != -100], dim=-1),
-                    log_target=True,
-                    reduction='mean'
-                ).item()
+
+                result = self.loss_module.compute_batch(
+                    logits, target_logits, labels, batch["input_ids"]
+                )
+                acc_task, acc_match = result.acc_task, result.acc_match
+                num_correct += acc_task * current_bz
+                num_match += acc_match * current_bz
+                task_loss += result.task_loss
+                kl_div += result.distillation_loss.item()
                 
                 self.metrics_logger.log(
                     stage=f"Stage {self.stage_idx + 1}",

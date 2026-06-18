@@ -127,25 +127,21 @@ class CausalPruningStage3(PruningStage):
                     mini_batch = {k: v[i : i + mini_batch_size] for k, v in batch.items()}
                     mini_labels = labels[i : i + mini_batch_size]
                     
-                    # Get target logits
                     with torch.no_grad():
                         target_logits = self.original_model(**mini_batch).logits
-                    
+
                     masks = self.mask_sampler.sample_binary_masks(mini_batch_size)
                     logits = self.hooked_model(
                         masks=masks,
                         oa_vecs=self.oa_vecs,
                         **mini_batch
                     ).logits
-                    
-                    # Compute task loss and KL divergence loss
-                    task_loss = F.cross_entropy(logits[:, :-1].flatten(end_dim=1), mini_labels[:, 1:].flatten()).item()
-                    target_logits = target_logits[:, :-1][mini_labels[:, 1:] != -100]
-                    logits = logits[:, :-1][mini_labels[:, 1:] != -100]
-                    loss = F.kl_div(
-                        F.log_softmax(logits, dim=-1), F.log_softmax(target_logits, dim=-1),
-                        log_target=True
+
+                    result = self.loss_module.compute_batch(
+                        logits, target_logits, mini_labels, mini_batch["input_ids"]
                     )
+                    task_loss = result.task_loss
+                    loss = result.distillation_loss
                     
                     # Log, compute gradients and take step
                     training_logs["kl_div"].append(loss.item())
@@ -156,7 +152,6 @@ class CausalPruningStage3(PruningStage):
                 
             else:
                 
-                # Get target logits, masks and current logits
                 with torch.no_grad():
                     target_logits = self.original_model(**batch).logits
 
@@ -166,15 +161,12 @@ class CausalPruningStage3(PruningStage):
                     oa_vecs=self.oa_vecs,
                     **batch
                 ).logits
-                
-                # Compute KL divergence loss
-                task_loss = F.cross_entropy(logits[:, :-1].flatten(end_dim=1), labels[:, 1:].flatten()).item()
-                target_logits = target_logits[:, :-1][labels[:, 1:] != -100]
-                logits = logits[:, :-1][labels[:, 1:] != -100]
-                loss = F.kl_div(
-                    F.log_softmax(logits, dim=-1), F.log_softmax(target_logits, dim=-1),
-                    log_target=True
+
+                result = self.loss_module.compute_batch(
+                    logits, target_logits, labels, batch["input_ids"]
                 )
+                task_loss = result.task_loss
+                loss = result.distillation_loss
                 
                 # Log, compute gradients and take step
                 training_logs["kl_div"].append(loss.item())
@@ -332,10 +324,7 @@ class CausalPruningStage3(PruningStage):
             param_groups.append({"params": self.oa_vecs.mlps.parameters(), "lr": self.config.lr_mlp_for_pruning})
         
         self.logger.info(f"1. Pruning Stage {self.stage_idx + 1} training...")
-        self.train(
-            oa_param_groups=param_groups,
-            loss_type='algo'
-        )
+        self.train(oa_param_groups=param_groups)
         
         self.logger.info(f"2. Pruning Stage {self.stage_idx + 1} validation...")
         self.test()

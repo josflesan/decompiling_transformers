@@ -1,0 +1,70 @@
+seed: 0
+device: mps
+exp_name: prune_test
+model_path: 'models/count-%2l4h256d4lr01drop'
+output_dir: 'src/out'
+skip_convert: False
+batch_size: 120
+learning_rate: 0.001
+
+search_method: greedy_search_then_round
+threshold_on_acc: 0.95
+only_default_scalars: true
+num_test_steps: 200
+eval_batch_size: 120
+failure_threshold: 0.9
+
+# Phase 2 round fallback (used when search_method: greedy_search_then_round)
+round:
+  training_lambda: 0.01
+  num_steps: 2000
+  lr: 0.0001
+  two_stages: true
+
+# Attention Primitives
+att_primitives_matrix:
+  - type: diagonal
+    nth_diagonal: 1
+  - type: diagonal
+    nth_diagonal: 2
+  - type: diagonal
+    nth_diagonal: 3
+  - type: toSpecial
+    special_token: 'bos'
+  - type: toSpecial
+    special_token: 'sep'
+  - type: everyN
+    every_nth: 2
+  - type: everyN
+    every_nth: 3  
+  - type: increasing
+  - type: decreasing
+  - type: zero
+att_primitives_bias:
+  - type: increasing
+  - type: decreasing
+  - type: zero
+  - type: toSpecial
+    special_token: 'bos'
+  - type: toSpecial
+    special_token: 'eos'
+  - type: toSpecial
+    special_token: 'sep'
+
+# Unembedding Primitives
+unembedding_primitives_matrix:
+  - type: diagonal
+    nth_diagonal: 1
+  - type: toSpecial
+    special_token: 'eos'
+  - type: zero
+unembedding_primitives_bias:
+  - type: toSpecial
+    special_token: 'eos'
+  - type: zero
+
+task_config:
+  name: counting
+  train_length_range: [0, 150]
+  val_length_range: [0, 150]
+  max_test_length: 150

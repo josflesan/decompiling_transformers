@@ -1,0 +1,8 @@
+seed: 0
+device: mps
+exp_name: prune_test
+output_dir: src/out
+convert_to_primitives: true
+show_logits_for_unconverted_mlp: false
+skip_convert: false
+mlp_failure_threshold: 0.9

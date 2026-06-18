@@ -40,15 +40,21 @@ class CustomTokenizer():
         
         return {"input_ids": torch.LongTensor(ids)}
     
+    def _flatten_ids(self, ids: List[int] | torch.Tensor | List[List[int]]) -> List[int]:
+        if isinstance(ids, torch.Tensor):
+            if ids.dim() > 1:
+                ids = ids[0]
+            return ids.tolist()
+        if ids and isinstance(ids[0], list):
+            return ids[0]
+        return ids
+
     def convert_ids_to_tokens(self, ids: List[int] | torch.Tensor, rm_special=False):
+        flat_ids = self._flatten_ids(ids)
         if rm_special:
-            return [self.vocab_inv[i] for i in ids if i not in self.special_token_ids]
-        else:
-            
-            if not isinstance(ids, list):
-                ids = ids.tolist()
-            
-            return list(map(lambda x: self.vocab_inv[x], ids))
+            return [self.vocab_inv[i] for i in flat_ids if i not in self.special_token_ids]
+        
+        return [self.vocab_inv[i] for i in flat_ids]
     
     def __len__(self):
         return len(self.vocab)

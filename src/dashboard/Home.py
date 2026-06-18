@@ -10,9 +10,10 @@ by Huang et al. (2026)
 
 ### Stages:
 - **Pruning**: monitor pruning stages and metrics for different experiments
-- **Primitive Search**: monitor primitive search training and results
+- **MLP Primitives**: monitor MLP primitive replacement progress and results
+- **Attention Primitives**: monitor attention primitive replacement progress and results
+- **RASP Conversion**: inspect the final symbolic D-RASP program and decompilation artifacts
 - **Mechanistic**: run attribution and other mechanistic experiments for a chosen checkpoint
-- **RASP Conversion**: run and inspect final conversion results
 
 Use the sidebar to navigate.
 """)

@@ -4,7 +4,7 @@ from copy import deepcopy
 from torch.utils.data import Dataset, IterableDataset
 from typing import Tuple
 
-from model.CustomTokenizer import CustomTokenizer
+from data.CustomTokenizer import CustomTokenizer
 
 class AdditionDataset(IterableDataset):
     """
@@ -22,6 +22,7 @@ class AdditionDataset(IterableDataset):
         self.range_min, self.range_max = length_range
         self.range_min = max(4, self.range_min)
         self.max_test_length = max_test_length
+        self.bce = False
         assert (max_test_length >= self.range_max) or (max_test_length == -1)  # pos embedding is initialized based on max_test_length
     
     def __iter__(self):

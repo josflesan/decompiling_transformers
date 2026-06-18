@@ -11,11 +11,9 @@ from math import isnan
 from typing import Any, Dict, Optional
 
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from transformers import GPT2LMHeadModel
 
-from data.CustomCollator import CustomCollator
 from data.CustomTokenizer import CustomTokenizer
 from primitives_att.core.MatrixRounder import MatrixRounder
 from primitives_att.core.hooks import attention_primitive_forward, lm_head_primitive_hook
@@ -24,6 +22,7 @@ from primitives_mlp.utilities.mlp_primitive_dataclasses import PrimitiveSearchOu
 from pruning.core.hooks import GPT2QKHooks
 from pruning.core.mask_samplers import QKMaskSampler
 from pruning.core.OptimalAblationVectors import OptimalQueryBiasVectors
+from utilities.core import LossModule
 from utilities.metrics_logger import MetricsLogger
 
 PrimitivesMap = Dict[Any, Any]
@@ -48,9 +47,9 @@ class PrimitiveExecutionEngine:
         oa_vecs: OptimalQueryBiasVectors,
         tokenizer: CustomTokenizer,
         converted_mlp: ConvertedMlp,
+        loss_module: LossModule,
         logger: Optional[logging.Logger] = None,
         metrics_logger: Optional[MetricsLogger] = None,
-        use_bce: bool = False,
     ):
         self.hooked_model = hooked_model
         self.original_model = original_model
@@ -59,9 +58,9 @@ class PrimitiveExecutionEngine:
         self.oa_vecs = oa_vecs
         self.tokenizer = tokenizer
         self.converted_mlp = converted_mlp
+        self.loss_module = loss_module
         self.logger = logger
         self.metrics_logger = metrics_logger
-        self.use_bce = use_bce
 
     def evaluate(
         self,
@@ -145,56 +144,13 @@ class PrimitiveExecutionEngine:
                 logits = result.logits.detach()
                 target_logits = self.original_model(**batch).logits.detach()
 
-                if not self.use_bce:
-                    sum_task_loss += F.cross_entropy(
-                        logits[:, :-1].flatten(end_dim=1),
-                        labels[:, 1:].flatten(),
-                    ).item()
-
-                    target_shift_logits = target_logits[:, :-1]
-                    shift_logits = logits[:, :-1]
-                    shift_labels = labels[:, 1:]
-
-                    target_predictions = target_shift_logits.argmax(dim=-1)
-                    predictions = shift_logits.argmax(dim=-1)
-
-                    match = ((predictions == target_predictions) | (shift_labels == -100)).all(
-                        dim=1
-                    )
-                    num_match_items += match.sum().item()
-                    correct = ((predictions == shift_labels) | (shift_labels == -100)).all(dim=1)
-                    num_correct_items += correct.sum().item()
-
-                    valid = shift_labels != -100
-                    if valid.any():
-                        sum_kl += F.kl_div(
-                            F.log_softmax(shift_logits[valid], dim=-1),
-                            F.log_softmax(target_shift_logits[valid], dim=-1),
-                            log_target=True,
-                        ).item()
-                else:
-                    mask = (batch["input_ids"] != self.tokenizer.pad_token_id) & (
-                        batch["input_ids"] != self.tokenizer.eos_token_id
-                    )
-                    task_loss = F.binary_cross_entropy_with_logits(
-                        logits, labels.float(), reduction="none"
-                    )
-                    sum_task_loss += task_loss[mask].mean().item()
-
-                    kl_loss = F.binary_cross_entropy_with_logits(
-                        logits, torch.sigmoid(target_logits), reduction="none"
-                    )
-                    sum_kl += kl_loss[mask].mean().item()
-
-                    target_predictions = (target_logits > 0).long()
-                    predictions = (logits > 0).long()
-                    pad_mask = (batch["input_ids"] == self.tokenizer.pad_token_id) | (
-                        batch["input_ids"] == self.tokenizer.eos_token_id
-                    )
-                    match = ((predictions == target_predictions).all(dim=-1) | pad_mask).all(dim=1)
-                    num_match_items += match.sum().item()
-                    correct = ((predictions == labels).all(dim=-1) | pad_mask).all(dim=1)
-                    num_correct_items += correct.sum().item()
+                result = self.loss_module.compute_batch(
+                    logits, target_logits, labels, batch["input_ids"]
+                )
+                sum_task_loss += result.task_loss
+                sum_kl += result.distillation_loss.item()
+                num_correct_items += result.acc_task * batch_size
+                num_match_items += result.acc_match * batch_size
 
                 inputs = []
                 current_step += 1
@@ -362,59 +318,13 @@ class PrimitiveExecutionEngine:
             with torch.no_grad():
                 target_logits = self.original_model(**batch).logits.detach()
 
-            if not self.use_bce:
-                task_loss = F.cross_entropy(
-                    logits[:, :-1].flatten(end_dim=1),
-                    labels[:, 1:].flatten(),
-                ).item()
-
-                target_shift_logits = target_logits[:, :-1]
-                shift_logits = logits[:, :-1]
-                shift_labels = labels[:, 1:]
-
-                with torch.no_grad():
-                    target_predictions = target_shift_logits.argmax(dim=-1)
-                    predictions = shift_logits.argmax(dim=-1)
-                    match = ((predictions == target_predictions) | (shift_labels == -100)).all(
-                        dim=1
-                    )
-                    correct = ((predictions == shift_labels) | (shift_labels == -100)).all(
-                        dim=1
-                    )
-                    match_acc = match.sum().item() / batch_size
-                    acc = correct.sum().item() / batch_size
-
-                loss = F.kl_div(
-                    F.log_softmax(shift_logits[shift_labels != -100], dim=-1),
-                    F.log_softmax(target_shift_logits[shift_labels != -100], dim=-1),
-                    log_target=True,
-                )
-            else:
-                mask = (batch["input_ids"] != self.tokenizer.pad_token_id) & (
-                    batch["input_ids"] != self.tokenizer.eos_token_id
-                )
-                task_loss = F.binary_cross_entropy_with_logits(
-                    logits, labels.float(), reduction="none"
-                )
-                task_loss = task_loss[mask].mean().item()
-
-                loss = F.binary_cross_entropy_with_logits(
-                    logits, torch.sigmoid(target_logits), reduction="none"
-                )
-                loss = loss[mask].mean()
-
-                with torch.no_grad():
-                    target_predictions = (target_logits > 0).long()
-                    predictions = (logits.detach() > 0).long()
-                    pad_mask = (batch["input_ids"] == self.tokenizer.pad_token_id) | (
-                        batch["input_ids"] == self.tokenizer.eos_token_id
-                    )
-                    match = ((predictions == target_predictions).all(dim=-1) | pad_mask).all(
-                        dim=1
-                    )
-                    correct = ((predictions == labels).all(dim=-1) | pad_mask).all(dim=1)
-                    match_acc = match.sum().item() / batch_size
-                    acc = correct.sum().item() / batch_size
+            result = self.loss_module.compute_batch(
+                logits, target_logits, labels, batch["input_ids"]
+            )
+            task_loss = result.task_loss
+            loss = result.distillation_loss
+            acc = result.acc_task
+            match_acc = result.acc_match
 
             if isnan(loss.item()):
                 if self.logger is not None:

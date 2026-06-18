@@ -19,6 +19,7 @@ from primitives_mlp.utilities.parameter_getters import (
 )
 from pruning.core.OptimalAblationVectors import OptimalQueryBiasVectors
 from pruning.core.hooks import GPT2QKHooks
+from utilities.core import LossModule
 from utilities.metrics_logger import MetricsLogger
 
 class LogitLens:
@@ -39,6 +40,7 @@ class LogitLens:
         tokenizer: CustomTokenizer,
         dataloader: DataLoader,
         converted_mlp: Dict[str, PrimitiveSearchOutput],
+        loss_module: LossModule,
         metrics_logger: MetricsLogger,
         logger: logging.Logger,
         cache_num: int=1000
@@ -53,6 +55,7 @@ class LogitLens:
         self.tokenizer = tokenizer
         self.dataloader = dataloader
         self.converted_mlp = converted_mlp
+        self.loss_module = loss_module
         self.cache_num = cache_num
     
     @torch.no_grad()
@@ -386,7 +389,7 @@ class LogitLens:
         else:
             mlp_in, mlp_logits = self._inspect_multi_mlp(complete_path)
     
-        if not hasattr(self.dataloader.dataset, "bce") or not self.dataloader.dataset.bce:
+        if not self.loss_module.use_bce:
             # For algorithmic tasks, subtract the second largest value from each token to aid interpretation
             # Why?: because of softmax, only the relative differences in logits matter. By centering the data
             # in this way, we emphasize the specific token promoted the most by the MLP, while "zeroing out"

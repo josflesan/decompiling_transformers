@@ -261,7 +261,7 @@ class CausalPruningStage1(PruningStage):
         ]
         
         self.logger.info(f"1. Pruning Stage {self.stage_idx + 1} training...")
-        self.train(oa_param_groups=param_groups, loss_type='algo')
+        self.train(oa_param_groups=param_groups)
         
         self.logger.info(f"2. Pruning Stage {self.stage_idx + 1} validation...")
         self.test()

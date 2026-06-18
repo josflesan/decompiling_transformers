@@ -1,6 +1,6 @@
 import os
 import random
-from typing import Any
+from typing import Any, Dict
 
 import numpy as np
 import torch
@@ -30,6 +30,10 @@ def convert_keys_to_int(obj: Any) -> Any:
         return tuple(convert_keys_to_int(v) for v in obj)
     return obj
 
+
+def build_config_from_dict(raw: Dict[str, Any]) -> RaspRunConfig:
+    raw = dict(raw)
+    return from_dict(RaspRunConfig, raw)
 
 def load_config(config_path: str) -> RaspRunConfig:
     with open(config_path) as f:

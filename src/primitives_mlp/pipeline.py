@@ -11,8 +11,7 @@ from typing import Any, Dict, List, Tuple
 from utilities.logger import setup_logger
 from utilities.metrics_logger import MetricsLogger
 
-from data.CustomCollator import CustomCollator
-from tasks.registry import get_task
+from utilities.core import LossModule, int_key_hook
 
 from pruning.core.hooks import GPT2QKHooks
 from pruning.core.OptimalAblationVectors import OptimalQueryBiasVectors
@@ -21,7 +20,7 @@ from primitives_mlp.core.PrimitiveSearchEngine import PrimitiveSearchEngine
 from primitives_mlp.core.MLPDataCollector import MLPDataCollector
 from primitives_mlp.utilities.mlp_primitive_utils import get_primitives
 from primitives_mlp.utilities.mlp_primitive_dataclasses import MLPPrimitivesConfig, PrimitiveSearchOutput, MLPDataCollectorOutput
-from utilities.core import int_key_hook
+from tasks.registry import get_task
 
 class MLPPrimitivePipeline:
     
@@ -41,6 +40,7 @@ class MLPPrimitivePipeline:
         self.dataloader = None
         self.hooked_model = None
         self.tokenizer = None
+        self.loss_module = None
         self.single_input_mlps = True
         
         # Converted MLP
@@ -87,7 +87,8 @@ class MLPPrimitivePipeline:
         # 4. Get dataloader
         task = get_task(self.config.task_config.name, self.config.task_config)
         self.tokenizer, dataset = task.build()
-        collator = CustomCollator(self.tokenizer.pad_token_id)
+        self.loss_module = LossModule.from_dataset(dataset['train'], self.tokenizer)
+        collator = self.loss_module.collator()
         self.dataloader = DataLoader(dataset['train'], batch_size=self.config.batch_size, shuffle=False, collate_fn=collator)
         
         # 5. Load hooked model
@@ -175,6 +176,7 @@ class MLPPrimitivePipeline:
             dataloader=self.dataloader,
             oa_vecs=self.oa_vecs,
             path=path,
+            loss_module=self.loss_module,
             metrics_logger=self.metrics_logger,
             logger=self.logger
         )
@@ -191,6 +193,7 @@ class MLPPrimitivePipeline:
             converted_mlp=self.converted_mlp,
             oa_vecs=self.oa_vecs,
             dataloader=self.dataloader,
+            loss_module=self.loss_module,
             all_primitives=self.all_primitives,
             metrics_logger=self.metrics_logger,
             single_input_mlps=self.single_input_mlps,
@@ -291,6 +294,7 @@ class MLPPrimitivePipeline:
             tokenizer=self.tokenizer,
             dataloader=self.dataloader,
             converted_mlp=self.converted_mlp,
+            loss_module=self.loss_module,
             metrics_logger=self.metrics_logger,
             logger=self.logger
         )

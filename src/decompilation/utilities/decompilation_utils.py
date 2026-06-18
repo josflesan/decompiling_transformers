@@ -10,6 +10,7 @@ import yaml
 from decompilation.utilities.decompilation_dataclasses import DecompilationRunConfig
 from primitives_att.utilities.att_primitive_utils import build_config_from_dict as build_att_config
 from primitives_mlp.utilities.mlp_primitive_utils import build_config_from_dict as build_mlp_config
+from rasp.utilities.rasp_utils import build_config_from_dict as build_rasp_config
 from pruning.utilities.pruning_utils import build_config_from_dict as build_pruning_config
 
 SHARED_CONFIG_KEYS = (
@@ -47,6 +48,7 @@ def load_config(
     run_pruning: Optional[bool] = None,
     run_mlp_primitives: Optional[bool] = None,
     run_att_primitives: Optional[bool] = None,
+    run_conversion: Optional[bool] = None,
 ) -> DecompilationRunConfig:
     with open(config_path) as f:
         raw = yaml.safe_load(f)
@@ -61,6 +63,7 @@ def load_config(
         pruning=build_pruning_config(_merge_stage_config(raw, "pruning")),
         mlp_primitives=build_mlp_config(_merge_stage_config(raw, "mlp_primitives")),
         att_primitives=build_att_config(_merge_stage_config(raw, "att_primitives")),
+        rasp=build_rasp_config(_merge_stage_config(raw, "rasp")),
         run_pruning=run_pruning if run_pruning is not None else raw.get("run_pruning", True),
         run_mlp_primitives=(
             run_mlp_primitives
@@ -72,6 +75,7 @@ def load_config(
             if run_att_primitives is not None
             else raw.get("run_att_primitives", True)
         ),
+        run_conversion=run_conversion if run_conversion is not None else raw.get("run_conversion", True),
     )
 
 def validate_stage_prerequisites(config: DecompilationRunConfig) -> None:

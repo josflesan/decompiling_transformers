@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 from transformers import GPT2LMHeadModel
 
 import primitives_att.primitives  # noqa: F401 — register primitives
-from data.CustomCollator import CustomCollator
+from utilities.core import LossModule, int_key_hook
 from primitives_att.core.PrimitiveExecutionEngine import PrimitiveExecutionEngine
 from primitives_att.core.PrimitiveSearchEngine import PrimitiveSearchEngine
 from primitives_att.utilities.att_primitive_dataclasses import (
@@ -29,7 +29,6 @@ from primitives_att.utilities.att_primitive_dataclasses import (
 from primitives_att.utilities.registry import PrimitiveRegistry
 from primitives_att.utilities.search_logging import count_converted, count_interactions, interaction_eval
 from tasks.registry import get_task
-from utilities.core import int_key_hook
 from utilities.logger import setup_logger
 from utilities.metrics_logger import MetricsLogger
 
@@ -54,6 +53,7 @@ class AttPrimitivePipeline:
         self.dataloader: DataLoader | None = None
         self.hooked_model: GPT2QKHooks | None = None
         self.tokenizer = None
+        self.loss_module = None
         self.mask_sampler: QKMaskSampler | None = None
         self.converted_mlp: dict = {}
         self.converted_att: AttPrimitiveSearchOutput | None = None
@@ -98,7 +98,8 @@ class AttPrimitivePipeline:
 
         task = get_task(self.config.task_config.name, self.config.task_config)
         self.tokenizer, dataset = task.build()
-        collator = CustomCollator(self.tokenizer.pad_token_id)
+        self.loss_module = LossModule.from_dataset(dataset["train"], self.tokenizer)
+        collator = self.loss_module.collator()
         self.dataloader = DataLoader(
             dataset["train"],
             batch_size=self.config.batch_size,
@@ -258,8 +259,7 @@ class AttPrimitivePipeline:
         assert self.dataloader is not None
         assert self.mask_sampler is not None
         assert self.tokenizer is not None
-
-        use_bce = getattr(self.dataloader.dataset, "BCE", False)
+        assert self.loss_module is not None
 
         if self.config.skip_convert:
             self.converted_att = torch.load(
@@ -273,9 +273,9 @@ class AttPrimitivePipeline:
                 oa_vecs=self.oa_vecs,
                 tokenizer=self.tokenizer,
                 converted_mlp=self.converted_mlp,
+                loss_module=self.loss_module,
                 logger=self.logger,
                 metrics_logger=self.metrics_logger,
-                use_bce=use_bce,
             )
             self._save_heatmaps(execution_engine)
             return self.converted_att.primitives
@@ -290,9 +290,9 @@ class AttPrimitivePipeline:
             oa_vecs=self.oa_vecs,
             tokenizer=self.tokenizer,
             converted_mlp=self.converted_mlp,
+            loss_module=self.loss_module,
             logger=self.logger,
             metrics_logger=self.metrics_logger,
-            use_bce=use_bce,
         )
 
         search_engine = PrimitiveSearchEngine(

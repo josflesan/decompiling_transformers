@@ -9,7 +9,6 @@ instrumenting the pruned transformer with hooks.
 import re
 import logging
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from transformers import GPT2LMHeadModel
 from typing import Dict
@@ -17,6 +16,7 @@ from typing import Dict
 from primitives_mlp.utilities.mlp_primitive_dataclasses import MLPDataCollectorOutput, PrimitiveSearchOutput
 from primitives_mlp.utilities.activation_tracing import trace_mlp, trace_mlp_multi
 from pruning.core.OptimalAblationVectors import OptimalQueryBiasVectors
+from utilities.core import LossModule
 from utilities.metrics_logger import MetricsLogger
 
 class MLPDataCollector:
@@ -28,6 +28,7 @@ class MLPDataCollector:
         path: str,
         dataloader: DataLoader,
         oa_vecs: OptimalQueryBiasVectors,
+        loss_module: LossModule,
         metrics_logger: MetricsLogger,
         logger: logging.Logger
     ):
@@ -35,6 +36,7 @@ class MLPDataCollector:
         self.converted_mlp = converted_mlp
         self.dataloader = dataloader
         self.oa_vecs = oa_vecs
+        self.loss_module = loss_module
         self.path = path
         self.metrics_logger = metrics_logger
         self.logger = logger
@@ -93,7 +95,9 @@ class MLPDataCollector:
                 oa_vecs=self.oa_vecs,
                 **batch
             ).logits
-            loss = F.cross_entropy(logits[:, :-1].flatten(end_dim=1), labels[:, 1:].flatten())
+            loss = self.loss_module.task_loss(
+                logits, labels, batch["input_ids"]
+            )
             loss.backward()
             
             #TODO: what is this for? - where are we training these masks? Are they the ablated ones?

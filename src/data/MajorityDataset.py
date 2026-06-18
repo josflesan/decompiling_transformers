@@ -17,8 +17,10 @@ class MajorityDataset(IterableDataset):
     ) -> None:
         super().__init__()
         self.tokenizer = tokenizer
+        assert len(tokenizer) == 6
+        
         self.range_min, self.range_max = length_range
-        self.range_min = max(2, self.range_min)
+        self.range_min = max(1, self.range_min)
         self.max_test_length = max_test_length
         self.bce = False
         
@@ -28,12 +30,13 @@ class MajorityDataset(IterableDataset):
         while True:
             length = random.randint(self.range_min, self.range_max)
             while True:
-                instance = random.choices(range(len(self.tokenizer) - 4), k=length)
-                most_common = Counter(instance).most_common(2)
-                if len(most_common) < 2 or most_common[0][1] > most_common[1][1]:
+                num_zero = random.randint(0, length)
+                if num_zero != length - num_zero:
                     break
-                
-            ans = most_common[0][0]
+            
+            instance = [0, ] * num_zero + [1, ] * (length - num_zero)
+            random.shuffle(instance)
+            ans = 0 if num_zero > length - num_zero else 1
             
             instance.insert(0, self.tokenizer.bos_token_id)
             instance.append(self.tokenizer.sep_token_id)

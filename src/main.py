@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from transformers import GPT2LMHeadModel
 
 from data.AdditionDataset import AdditionDataset
-from data.base import CustomCollator
+from data.CustomCollator import CustomCollator
 from model.CustomTokenizer import CustomTokenizer
 
 BASE_CONFIG = {'batch_size_for_pruning': 120, 'device': 'cuda','find_graph_method': 'pruning', 'length_range': [0, 150], 'num_iterations': 100, 'num_repeat_for_pruning': 12, 'path_to_saved_model': '', 'period_for_data': 3, 'prune_inputs_to_mlps_and_lm_head': True, 'seed': 0, 

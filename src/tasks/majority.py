@@ -8,7 +8,7 @@ from data.CustomTokenizer import CustomTokenizer
 class MajorityTask(Task):
     
     def build_tokenizer(self):
-        vocab = [str(i) for i in range(self.config.max_test_length)]
+        vocab = ["0", "1"]
         tokenizer = CustomTokenizer(vocab)
         
         return tokenizer

@@ -1,12 +1,12 @@
 # Shared settings propagated to all stages unless overridden below.
 seed: 0
 device: mps
-exp_name: count_small
+exp_name: majority_small
 output_dir: src/out
-model_path: models/count-@1l4h256d4lr01drop
+model_path: models/majority-@1l4h256d3lr01drop
 
 task_config:
-  name: counting
+  name: majority
   train_length_range: [0, 150]
   val_length_range: [0, 150]
   max_test_length: 150
@@ -15,6 +15,7 @@ task_config:
 run_pruning: true
 run_mlp_primitives: true
 run_att_primitives: true
+run_conversion: true
 
 pruning:
   init_sample_param: 8
@@ -42,7 +43,7 @@ pruning:
       test_batch_size: 120
 
     stage3:
-      lamb: 0.00000065
+      lamb: 0.0000001
       num_steps: 500
       num_repeat: 12
       train_batch_size: 120
@@ -143,3 +144,9 @@ att_primitives:
     - type: toSpecial
       special_token: eos
     - type: zero
+
+rasp:
+  convert_to_primitives: true
+  show_logits_for_unconverted_mlp: false
+  skip_convert: false
+  mlp_failure_threshold: 0.9

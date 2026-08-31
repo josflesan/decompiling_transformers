@@ -27,6 +27,33 @@ def altair_chart(df, x, y, color="type", key=None):
     chart = alt.Chart(df).mark_line().encode(**encodings).interactive()
     st.altair_chart(chart, use_container_width=True)
 
+def altair_trial_chart(df, x, y, color="lambda_trial", key=None, title=None):
+    if y not in df.columns or df.empty:
+        st.caption("No data available.")
+        return
+
+    log_scale = st.checkbox("Log scale", value=False, key=key)
+    y_scale = alt.Scale(type="log") if log_scale else alt.Scale()
+
+    chart = (
+        alt.Chart(df)
+        .mark_line()
+        .encode(
+            x=alt.X(f"{x}:Q", title=x.replace("_", " ").title()),
+            y=alt.Y(f"{y}:Q", scale=y_scale, title=y.replace("_", " ").title()),
+            color=alt.Color(f"{color}:N", title="Lambda run"),
+            tooltip=[
+                alt.Tooltip(f"{color}:N", title="Run"),
+                alt.Tooltip(f"{x}:Q", title=x),
+                alt.Tooltip(f"{y}:Q", title=y),
+            ],
+        )
+        .properties(height=280, title=title)
+        .interactive()
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
 def altair_histogram(df):
     
     with st.container():

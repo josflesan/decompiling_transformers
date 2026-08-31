@@ -9,8 +9,17 @@ from typing import Any, Dict, List
 from pathlib import Path
 from transformers import GPT2LMHeadModel
 from dacite import from_dict
-from .pruning_dataclasses import PruningRunConfig, StageConfig
+from .pruning_dataclasses import LambSearchConfig, PruningRunConfig, StageConfig
 from utilities.core import TaskConfig
+
+
+def _build_stage_config(stage_raw: Dict[str, Any]) -> StageConfig:
+    stage_raw = dict(stage_raw)
+    lamb_search = stage_raw.get("lamb_search")
+    if lamb_search is not None:
+        stage_raw["lamb_search"] = LambSearchConfig(**lamb_search)
+    return StageConfig(**stage_raw)
+
 
 def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
@@ -22,7 +31,7 @@ def build_config_from_dict(raw: Dict[str, Any]) -> PruningRunConfig:
     raw = dict(raw)
 
     raw["pruning_stages"] = {
-        key: StageConfig(**value) for key, value in raw["pruning_stages"].items()
+        key: _build_stage_config(value) for key, value in raw["pruning_stages"].items()
     }
     raw["task_config"] = TaskConfig(**raw["task_config"])
 

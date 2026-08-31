@@ -12,6 +12,15 @@ class TrainConfig:
     batch_size: int = 32
     
 @dataclass
+class LambSearchConfig:
+    probe_lambdas: Optional[List[float]] = None
+    probe_num_steps: Optional[int] = None
+    max_probes: int = 3
+    enable_refinement: bool = True
+    probe_scale_factor: float = 10.0
+
+
+@dataclass
 class StageConfig:
     train_batch_size: int
     test_batch_size: int
@@ -21,6 +30,8 @@ class StageConfig:
     linear_ln: Optional[bool] = False
     mini_batch_size: Optional[int] = 0
     split_mlp: Optional[bool] = False
+    auto_lamb: bool = False
+    lamb_search: Optional[LambSearchConfig] = None
 
 @dataclass
 class PruningRunConfig:
@@ -38,6 +49,8 @@ class PruningRunConfig:
     
     init_sample_param: Optional[float] = None
     baseline_loss: Optional[float] = None
+    baseline_acc: Optional[float] = None
+    relative_gap: float = 0.9
     full_output_dir: Path = field(init=False)
     torch_device: torch.device = field(init=False)
     

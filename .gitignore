@@ -215,3 +215,4 @@ src/out/*
 # Ignore agent stuff
 GEMINI.md
 AGENTS.md
+spec/*

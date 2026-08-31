@@ -259,7 +259,13 @@ class CausalPruningStage1(PruningStage):
             {"params": [self.oa_vecs.input_vertex_oa], "lr": self.config.lr_oa_for_pruning},
             {"params": [self.oa_vecs.output_vertex_oa], "lr": 1e-4},
         ]
-        
+
+        if self.stage_config.auto_lamb:
+            self.logger.info(f"1. Pruning Stage {self.stage_idx + 1} lambda search...")
+            self.run_with_lambda_search(param_groups)
+            self.logger.info(f"Pruning Stage {self.stage_idx + 1} complete!\n")
+            return
+
         self.logger.info(f"1. Pruning Stage {self.stage_idx + 1} training...")
         self.train(oa_param_groups=param_groups)
         

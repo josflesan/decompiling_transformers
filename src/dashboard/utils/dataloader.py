@@ -13,6 +13,12 @@ def load_metrics(metrics_file: Path) -> pd.DataFrame:
 
     try:
         df = pd.read_json(metrics_file, lines=True)
+        if "timestamp" in df.columns:
+            if pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
+                # Pandas may auto-parse unix epochs as datetimes; keep unix seconds.
+                df["timestamp"] = df["timestamp"].astype("int64") / 1e9
+            else:
+                df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")
         return df
     except Exception as e:
         st.error(f"Failed to load metrics: {e}")

@@ -9,10 +9,19 @@ from copy import deepcopy
 from pathlib import Path
 from torch.utils.data import DataLoader
 from transformers import GPT2LMHeadModel
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from tasks.registry import get_task
-from pruning.utilities.pruning_dataclasses import PruningRunConfig, StageConfig
+from pruning.core.lambda_search import (
+    LambdaTrialResult,
+    bracket_exists,
+    compute_threshold_acc,
+    resolve_probe_num_steps,
+    select_best_trial,
+    suggest_probe_lambdas,
+    suggest_refined_lambdas,
+)
+from pruning.utilities.pruning_dataclasses import LambSearchConfig, PruningRunConfig, StageConfig
 from utilities.core import LossModule, int_key_hook
 from utilities.metrics_logger import MetricsLogger
 
@@ -36,6 +45,7 @@ class PruningStage(ABC):
         self.stage_config: StageConfig = self.config.pruning_stages[stage_name]
         self.logger = logger
         self.metrics_logger = metrics_logger
+        self._lambda_trial_label: Optional[str] = None
         
         # Initialize output dict and models
         self.output_config_path = config.full_output_dir / 'args.json'
@@ -75,14 +85,31 @@ class PruningStage(ABC):
             "driver_allocated": torch.mps.driver_allocated_memory() / 1e9, # Total memory the driver is using
         }
     
+    def _format_lambda_trial_label(self, lamb: float, *, probe: bool) -> str:
+        kind = "probe" if probe else "final"
+        return f"{kind} λ={lamb:.2e}"
+
+    def _set_lambda_trial_label(self, lamb: float, *, probe: bool) -> None:
+        self._lambda_trial_label = self._format_lambda_trial_label(lamb, probe=probe)
+
+    def _clear_lambda_trial_label(self) -> None:
+        self._lambda_trial_label = None
+
+    def _current_num_edges(self) -> int:
+        with torch.no_grad():
+            masks = self.mask_sampler.sample_binary_masks(1).squeeze(0)
+            return int((masks == 1).sum().item())
+
     def train(
         self,
         oa_param_groups: Dict[str, Any],
+        num_steps_override: Optional[int] = None,
     ):
         # Set up optimizer, dataloader and other parameters
         gamma = 0.0
         log_interval = 50
-        countdown = self.num_steps
+        step_budget = num_steps_override if num_steps_override is not None else self.num_steps
+        countdown = step_budget
         patience = 3
         batch_size = self.stage_config.train_batch_size
         mini_batch_size = self.stage_config.mini_batch_size
@@ -212,21 +239,26 @@ class PruningStage(ABC):
                 self.logger.warning(f"sum NaN: {nan_count}")
             
             all_sample_p = torch.cat([p.data.detach().view(-1) for p in self.mask_sampler.parameters()], dim=0)
-            self.metrics_logger.log(
-                stage=f"Stage {self.stage_idx + 1}",
-                timestamp=time.time(),
-                step=current_step,
-                current_maxstep=min(current_step + countdown, 5000),
-                split="train",
-                kl_div=loss.item(),
-                task_loss=task_loss,
-                reg_edge=reg_edge,
-                reg_node=reg_node,
-                loss=loss.item(),
-                oa_grad_norm=oa_grad_norm,
-                sampler_grad_norm=sampler_grad_norm,
-                sampler_params=all_sample_p.cpu().tolist()
-            )
+            train_metrics = {
+                "stage": f"Stage {self.stage_idx + 1}",
+                "timestamp": time.time(),
+                "step": current_step,
+                "current_maxstep": min(current_step + countdown, 5000),
+                "split": "train",
+                "kl_div": loss.item(),
+                "task_loss": task_loss,
+                "reg_edge": reg_edge,
+                "reg_node": reg_node,
+                "loss": loss.item(),
+                "oa_grad_norm": oa_grad_norm,
+                "sampler_grad_norm": sampler_grad_norm,
+                "sampler_params": all_sample_p.cpu().tolist(),
+            }
+            if self._lambda_trial_label is not None:
+                train_metrics["lambda_trial"] = self._lambda_trial_label
+                train_metrics["lamb"] = self.lamb
+                train_metrics["num_edges"] = self._current_num_edges()
+            self.metrics_logger.log(**train_metrics)
             
             # Logging
             if (current_step + 1) % log_interval == 0:
@@ -248,7 +280,7 @@ class PruningStage(ABC):
                 
                 # If there are ambivalent masks left, increase number of steps
                 if ((all_sample_p > -1) & (all_sample_p < 1)).sum().item():
-                    countdown = self.num_steps + 1
+                    countdown = step_budget + 1
                 
                 print(f"COUNTDOWN STEPS LEFT: {countdown}")
                 
@@ -262,13 +294,34 @@ class PruningStage(ABC):
                 break
             
         self.logger.info(f"Finished training ({current_step + 1} steps)")
-    
-    def test(self):
-        num_test_step = 200
-        num_correct = 0
-        num_match = 0
-        task_loss = 0
-        kl_div = 0
+
+    def _get_lamb_search_config(self) -> LambSearchConfig:
+        return self.stage_config.lamb_search or LambSearchConfig()
+
+    def _capture_trial_state(self) -> Dict[str, Dict[str, torch.Tensor]]:
+        return {
+            "mask_sampler": {
+                key: value.clone() for key, value in self.mask_sampler.state_dict().items()
+            },
+            "oa_vecs": {
+                key: value.clone() for key, value in self.oa_vecs.state_dict().items()
+            },
+        }
+
+    def _restore_trial_state(self, state: Dict[str, Dict[str, torch.Tensor]]) -> None:
+        self.mask_sampler.load_state_dict(state["mask_sampler"])
+        self.oa_vecs.load_state_dict(state["oa_vecs"])
+
+    def _evaluate_match_acc(
+        self,
+        num_test_step: int = 200,
+        *,
+        log_metrics: bool = False,
+    ) -> Dict[str, float]:
+        num_correct = 0.0
+        num_match = 0.0
+        task_loss = 0.0
+        kl_div = 0.0
         batch_size = self.stage_config.test_batch_size
         dataloader = DataLoader(self.train_dataset, batch_size=batch_size, shuffle=False, collate_fn=self.collator)
 
@@ -278,7 +331,7 @@ class PruningStage(ABC):
         with torch.no_grad():
             for current_step, batch in enumerate(dataloader):
                 batch = {k: v.to(self.config.torch_device) for k, v in batch.items()}
-                current_bz = batch['input_ids'].size(0)
+                current_bz = batch["input_ids"].size(0)
                 total_examples += current_bz
                 total_batches += 1
                 labels = batch.pop("labels")
@@ -295,32 +348,213 @@ class PruningStage(ABC):
                 result = self.loss_module.compute_batch(
                     logits, target_logits, labels, batch["input_ids"]
                 )
-                acc_task, acc_match = result.acc_task, result.acc_match
-                num_correct += acc_task * current_bz
-                num_match += acc_match * current_bz
+                num_correct += result.acc_task * current_bz
+                num_match += result.acc_match * current_bz
                 task_loss += result.task_loss
                 kl_div += result.distillation_loss.item()
-                
-                self.metrics_logger.log(
-                    stage=f"Stage {self.stage_idx + 1}",
-                    step=current_step,
-                    split="val",
-                    kl_div=kl_div,
-                    task_loss=task_loss,
-                    acc_task=num_correct / total_examples,
-                    acc_match=num_match / total_examples
-                )
-                
+
+                if log_metrics:
+                    val_metrics = {
+                        "stage": f"Stage {self.stage_idx + 1}",
+                        "timestamp": time.time(),
+                        "step": current_step,
+                        "split": "val",
+                        "kl_div": kl_div,
+                        "task_loss": task_loss,
+                        "acc_task": num_correct / total_examples,
+                        "acc_match": num_match / total_examples,
+                    }
+                    if self._lambda_trial_label is not None:
+                        val_metrics["lambda_trial"] = self._lambda_trial_label
+                        val_metrics["lamb"] = self.lamb
+                    self.metrics_logger.log(**val_metrics)
+
                 if current_step + 1 == num_test_step:
                     break
-            
-        acc_match = num_match / total_examples
-        acc_task = num_correct / total_examples
-        task_loss /= total_batches
-        kl_div /= total_batches
-        
+
         masks = self.mask_sampler.sample_binary_masks(1).squeeze(0)
         num_edges = (masks == 1).sum().item()
+
+        return {
+            "acc_match": num_match / total_examples,
+            "acc_task": num_correct / total_examples,
+            "task_loss": task_loss / total_batches,
+            "kl_div": kl_div / total_batches,
+            "num_edges": float(num_edges),
+        }
+
+    def _get_baseline_acc(self) -> float:
+        if self.config.baseline_acc is not None:
+            return self.config.baseline_acc
+
+        if "pruning_baseline_acc" in self.output_dict:
+            self.config.baseline_acc = float(self.output_dict["pruning_baseline_acc"])
+            return self.config.baseline_acc
+
+        metrics = self._evaluate_match_acc()
+        self.config.baseline_acc = metrics["acc_match"]
+        self.logger.info(f"Pruning baseline acc_match={self.config.baseline_acc:.4f}")
+        return self.config.baseline_acc
+
+    def _reference_acc_for_stage(self) -> float:
+        if self.stage_idx == 0:
+            return self._evaluate_match_acc()["acc_match"]
+
+        return float(self.output_dict["acc_match"])
+
+    def _log_lambda_probe(
+        self,
+        trial: LambdaTrialResult,
+        threshold_acc: float,
+        baseline_acc: float,
+        reference_acc: float,
+    ) -> None:
+        self.metrics_logger.log(
+            task="lambda_probe",
+            stage=f"Stage {self.stage_idx + 1}",
+            lamb=trial.lamb,
+            probe=trial.probe,
+            acc_match=trial.acc_match,
+            num_edges=trial.num_edges,
+            threshold_acc=threshold_acc,
+            baseline_acc=baseline_acc,
+            reference_acc=reference_acc,
+            feasible=trial.feasible,
+        )
+
+    def run_trial(
+        self,
+        lamb: float,
+        num_steps: int,
+        probe: bool,
+        oa_param_groups: List[Dict[str, Any]],
+        trial_state: Dict[str, Dict[str, torch.Tensor]],
+        threshold_acc: float,
+        baseline_acc: float,
+        reference_acc: float,
+    ) -> LambdaTrialResult:
+        self._restore_trial_state(trial_state)
+        self.lamb = lamb
+        self._set_lambda_trial_label(lamb, probe=probe)
+        try:
+            self.train(oa_param_groups=oa_param_groups, num_steps_override=num_steps)
+            metrics = self._evaluate_match_acc()
+            trial = LambdaTrialResult(
+                acc_match=metrics["acc_match"],
+                num_edges=int(metrics["num_edges"]),
+                lamb=lamb,
+                probe=probe,
+                feasible=metrics["acc_match"] >= threshold_acc,
+            )
+            self._log_lambda_probe(trial, threshold_acc, baseline_acc, reference_acc)
+            self.logger.info(
+                f"Lambda probe lamb={lamb:.2e} probe={probe} "
+                f"acc_match={trial.acc_match:.4f} num_edges={trial.num_edges} "
+                f"feasible={trial.feasible}"
+            )
+            return trial
+        finally:
+            self._clear_lambda_trial_label()
+
+    def run_with_lambda_search(self, oa_param_groups: List[Dict[str, Any]]) -> None:
+        search_cfg = self._get_lamb_search_config()
+        baseline_acc = self._get_baseline_acc()
+        reference_acc = self._reference_acc_for_stage()
+        threshold_acc = compute_threshold_acc(
+            baseline_acc,
+            reference_acc,
+            self.config.relative_gap,
+        )
+        probe_steps = resolve_probe_num_steps(self.num_steps, search_cfg.probe_num_steps)
+        trial_state = self._capture_trial_state()
+
+        self.logger.info(
+            f"Lambda search stage {self.stage_idx + 1}: "
+            f"baseline_acc={baseline_acc:.4f} reference_acc={reference_acc:.4f} "
+            f"threshold_acc={threshold_acc:.4f} probe_steps={probe_steps}"
+        )
+
+        probe_lambdas = suggest_probe_lambdas(
+            center_lamb=self.stage_config.lamb,
+            probe_lambdas=search_cfg.probe_lambdas,
+            scale_factor=search_cfg.probe_scale_factor,
+            max_probes=search_cfg.max_probes,
+        )
+
+        trials: List[LambdaTrialResult] = []
+        for lamb in probe_lambdas:
+            trials.append(
+                self.run_trial(
+                    lamb=lamb,
+                    num_steps=probe_steps,
+                    probe=True,
+                    oa_param_groups=oa_param_groups,
+                    trial_state=trial_state,
+                    threshold_acc=threshold_acc,
+                    baseline_acc=baseline_acc,
+                    reference_acc=reference_acc,
+                )
+            )
+
+        if search_cfg.enable_refinement and bracket_exists(trials, threshold_acc):
+            above = [t.lamb for t in trials if t.acc_match >= threshold_acc]
+            below = [t.lamb for t in trials if t.acc_match < threshold_acc]
+            refined_lamb = suggest_refined_lambdas(above, below)
+            if refined_lamb is not None:
+                trials.append(
+                    self.run_trial(
+                        lamb=refined_lamb,
+                        num_steps=probe_steps,
+                        probe=True,
+                        oa_param_groups=oa_param_groups,
+                        trial_state=trial_state,
+                        threshold_acc=threshold_acc,
+                        baseline_acc=baseline_acc,
+                        reference_acc=reference_acc,
+                    )
+                )
+
+        chosen, used_fallback = select_best_trial(trials, threshold_acc)
+        if used_fallback:
+            self.logger.warning(
+                f"No lambda probe met threshold {threshold_acc:.4f}; "
+                f"falling back to smallest lambda {chosen.lamb:.2e}"
+            )
+        else:
+            self.logger.info(
+                f"Selected lambda {chosen.lamb:.2e} with acc_match={chosen.acc_match:.4f} "
+                f"and num_edges={chosen.num_edges}"
+            )
+
+        self.metrics_logger.log(
+            task="lambda_search_selected",
+            stage=f"Stage {self.stage_idx + 1}",
+            lamb=chosen.lamb,
+            acc_match=chosen.acc_match,
+            num_edges=chosen.num_edges,
+            threshold_acc=threshold_acc,
+            used_fallback=used_fallback,
+        )
+
+        self._restore_trial_state(trial_state)
+        self.lamb = chosen.lamb
+        self.logger.info(f"Final training with lamb={self.lamb:.2e} for {self.num_steps} steps...")
+        self._set_lambda_trial_label(chosen.lamb, probe=False)
+        try:
+            self.train(oa_param_groups=oa_param_groups)
+            self.test()
+        finally:
+            self._clear_lambda_trial_label()
+        self.transform_graph()
+        self.save()
+
+    def test(self):
+        metrics = self._evaluate_match_acc(log_metrics=True)
+        acc_match = metrics["acc_match"]
+        acc_task = metrics["acc_task"]
+        task_loss = metrics["task_loss"]
+        kl_div = metrics["kl_div"]
+        num_edges = int(metrics["num_edges"])
         self.logger.info(f"After Pruning Edge Count: {num_edges}")
         
         # Prepare output dictionary
@@ -340,7 +574,9 @@ class PruningStage(ABC):
         self.output_dict['acc_task'] = acc_task
         self.output_dict['kl_div'] = kl_div
         self.output_dict['task_loss'] = task_loss
-    
+        if self.stage_idx == 0 and self.config.baseline_acc is not None:
+            self.output_dict['pruning_baseline_acc'] = self.config.baseline_acc
+
     def save(self):
         # Save optimal ablation vectors and output training JSON
         torch.save(self.oa_vecs, self.config.full_output_dir / f'stage{self.stage_idx + 1}' / 'oa_vecs.pt')

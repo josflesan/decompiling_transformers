@@ -356,6 +356,12 @@ class CausalPruningStage2(PruningStage):
         if self.stage_config.split_mlp:
             param_groups.append({"params": self.oa_vecs.mlps.parameters(), "lr": self.config.lr_mlp_for_pruning})
 
+        if self.stage_config.auto_lamb:
+            self.logger.info(f"1. Pruning Stage {self.stage_idx + 1} lambda search...")
+            self.run_with_lambda_search(param_groups)
+            self.logger.info(f"Pruning Stage {self.stage_idx + 1} complete!\n")
+            return
+
         self.logger.info(f"1. Pruning Stage {self.stage_idx + 1} training...")
         self.train(oa_param_groups=param_groups)
         

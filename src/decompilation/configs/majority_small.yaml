@@ -23,10 +23,12 @@ pruning:
   lr_ln_var_for_pruning: 0.1
   lr_oa_for_pruning: 0.002
   lr_mlp_for_pruning: 0.001
+  relative_gap: 0.9
   pruning_stages:
     stage1:
       linear_ln: True
-      lamb: 0.000001
+      lamb: 0.00001
+      auto_lamb: false
       num_steps: 1000
       train_batch_size: 120
       mini_batch_size: 30
@@ -35,7 +37,8 @@ pruning:
     
     stage2:
       split_mlp: True
-      lamb: 0.00001
+      lamb: 0.000001
+      auto_lamb: false
       num_steps: 500
       num_repeat: 12
       train_batch_size: 120
@@ -43,7 +46,8 @@ pruning:
       test_batch_size: 120
 
     stage3:
-      lamb: 0.0000001
+      lamb: 0.00001
+      auto_lamb: true
       num_steps: 500
       num_repeat: 12
       train_batch_size: 120
